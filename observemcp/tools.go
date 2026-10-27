@@ -8,8 +8,14 @@
 // Wire it into the MCP server rather than the other way round:
 //
 //	&mcp.Provider{Options: []mcp.Option{
-//	    mcp.WithTools(observemcp.Tools(recorder)),
+//	    mcp.WithTools(observemcp.Tools()),
 //	}}
+//
+// Tools takes no recorder, and that is deliberate: LoadProviders is written
+// before anything exists, so a recorder passed there would be the nil one
+// observe's provider has not built yet. The tools resolve it when a call
+// arrives instead, which also means the ordering between the two providers
+// does not matter.
 //
 // One thing to know before reading an empty answer. `lemmego run mcp:serve`
 // is a separate process from the web server, so these tools see only what a
@@ -30,8 +36,8 @@ import (
 )
 
 // Tools returns a registrar contributing observe's tools.
-func Tools(recorder *observe.Recorder) func(*sdk.Server) {
-	t := &tools{recorder: recorder}
+func Tools() func(*sdk.Server) {
+	t := &tools{}
 	return func(server *sdk.Server) {
 		t.addRequests(server)
 		t.addRequest(server)
@@ -41,14 +47,19 @@ func Tools(recorder *observe.Recorder) func(*sdk.Server) {
 	}
 }
 
-type tools struct{ recorder *observe.Recorder }
+type tools struct{}
+
+// recorder resolves the installed recorder at call time rather than at
+// registration time. See the package documentation.
+func (t *tools) recorder() *observe.Recorder { return observe.Default() }
 
 func (t *tools) store() (observe.Store, error) {
-	if t.recorder == nil {
+	recorder := t.recorder()
+	if recorder == nil {
 		return nil, fmt.Errorf("observe is not recording. Register " +
 			"observe/provider.Provider and set OBSERVE_ENABLED=true")
 	}
-	store := t.recorder.Store()
+	store := recorder.Store()
 	if store == nil {
 		return nil, fmt.Errorf("observe has no store")
 	}
@@ -61,7 +72,7 @@ func (t *tools) note(found int) string {
 	if found > 0 {
 		return ""
 	}
-	watchers := t.recorder.Watchers()
+	watchers := t.recorder().Watchers()
 	if len(watchers) == 0 {
 		return "\n\nNothing matched, and no watchers are installed — so nothing " +
 			"is being recorded at all. This is not evidence that the application is idle."

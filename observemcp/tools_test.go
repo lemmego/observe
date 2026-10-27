@@ -29,12 +29,15 @@ func TestEveryToolRegisters(t *testing.T) {
 			t.Fatalf("registering the tools panicked: %v", recovered)
 		}
 	}()
-	observemcp.Tools(recorder)(server)
+	observemcp.Tools()(server)
 }
 
-// TestANilRecorderIsReportedRatherThanPanicking, because the tools are
-// registered whether or not recording is on.
-func TestANilRecorderIsReportedRatherThanPanicking(t *testing.T) {
+// TestNoInstalledRecorderIsReportedRatherThanPanicking, because the tools are
+// registered whether or not recording is on — and, resolving lazily, they are
+// registered before it is.
+func TestNoInstalledRecorderIsReportedRatherThanPanicking(t *testing.T) {
+	observe.SetDefault(nil)
+
 	server := sdk.NewServer(&sdk.Implementation{Name: "test", Version: "0"}, nil)
 
 	defer func() {
@@ -42,7 +45,7 @@ func TestANilRecorderIsReportedRatherThanPanicking(t *testing.T) {
 			t.Fatalf("a nil recorder panicked at registration: %v", recovered)
 		}
 	}()
-	observemcp.Tools(nil)(server)
+	observemcp.Tools()(server)
 }
 
 // TestRegistrarsAreCalledOnce, because a double registration is what the
@@ -51,7 +54,7 @@ func TestRegistrarsAreCalledOnce(t *testing.T) {
 	recorder := observe.New(memory.New())
 	t.Cleanup(func() { _ = recorder.Close(context.Background()) })
 
-	registrar := observemcp.Tools(recorder)
+	registrar := observemcp.Tools()
 	server := sdk.NewServer(&sdk.Implementation{Name: "test", Version: "0"}, nil)
 	registrar(server)
 
