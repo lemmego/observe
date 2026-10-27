@@ -71,6 +71,20 @@ type Recorder struct {
 	// would record those lines too.
 	dropLogged atomic.Bool
 
+	// storing is set while a batch is being written.
+	//
+	// The context guard closes the recursion for anything that receives a
+	// context, which is most things. It cannot close it for a log line
+	// emitted without one — slog.Error rather than slog.ErrorContext — from
+	// inside a database driver during this store's own write. That line would
+	// be recorded, producing a write, producing a line.
+	//
+	// So the slog watcher also declines while this is set. The cost is that
+	// log lines emitted during a flush window of a few milliseconds are not
+	// recorded; they still reach the log itself. The alternative is a write
+	// loop that never ends.
+	storing atomic.Bool
+
 	batchSize     int
 	flushInterval time.Duration
 	sampler       func(Entry) bool
@@ -211,6 +225,17 @@ func (r *Recorder) Watchers() []string {
 	return names
 }
 
+// Storing reports whether a batch is being written right now.
+//
+// The slog watcher consults this; see the field's own documentation for why
+// the context guard is not sufficient on its own.
+func (r *Recorder) Storing() bool {
+	if r == nil {
+		return false
+	}
+	return r.storing.Load()
+}
+
 // Stats reports what the recorder has done.
 func (r *Recorder) Stats() Stats {
 	if r == nil {
@@ -308,6 +333,9 @@ func (r *Recorder) flush(batch []Entry) {
 	// the batch it is trying to drain.
 	ctx, cancel := context.WithTimeout(WithoutRecording(context.Background()), 10*time.Second)
 	defer cancel()
+
+	r.storing.Store(true)
+	defer r.storing.Store(false)
 
 	if err := r.store.Record(ctx, batch); err != nil {
 		r.failed.Add(uint64(len(batch)))
