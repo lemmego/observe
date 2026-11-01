@@ -536,3 +536,47 @@ func between(s, open, close string) string {
 	}
 	return rest[:end]
 }
+
+// TestTheDocumentDoesNotScrollOnADesktop.
+//
+// macOS rubber-banding drags the whole document past its end, and a
+// position:sticky header is positioned against that document — so the header
+// detaches and rides the bounce, and the gap it leaves shows the html
+// background rather than the page. Clamping the scroll to an inner container
+// leaves nothing for the bounce to pull.
+//
+// overscroll-behavior:contain is the half that is easy to leave out: without
+// it a scroll reaching the end of the pane chains back up to the document and
+// bounces that instead, which looks exactly like the problem it was meant to
+// fix.
+func TestTheDocumentDoesNotScrollOnADesktop(t *testing.T) {
+	page := servedPage(t)
+
+	for _, want := range []string{
+		"html,body{height:100%;overflow:hidden;overscroll-behavior:none}",
+		".main{height:100%;overflow-y:auto;overscroll-behavior:contain}",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the stylesheet is missing %q", want)
+		}
+	}
+
+	// Only above the breakpoint. A phone with a fixed-height pane fights the
+	// browser's own disappearing chrome, and the header is static there
+	// anyway.
+	if !strings.Contains(page, "@media (min-width:861px){") {
+		t.Error("the fixed-viewport layout is not behind a desktop media query")
+	}
+
+	// html is painted regardless, so a browser honouring none of this still
+	// bounces in the theme's colour rather than in white.
+	if !strings.Contains(page, "html{background:var(--bg)}") {
+		t.Error("html has no background, so an overscroll shows white under a dark page")
+	}
+
+	// The pane is the scroll container, so scrolling the window alone would
+	// leave a detail view opened halfway down.
+	if !strings.Contains(page, "main.scrollTop = 0") {
+		t.Error("opening a detail view does not reset the pane's scroll")
+	}
+}

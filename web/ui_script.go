@@ -415,6 +415,15 @@ function detail(html){
   el('list').innerHTML = '';
   el('back').onclick = function(){ state.view = null; el('detail').innerHTML = ''; load(false); };
   bindTags(el('detail'));
+  toTop();
+}
+
+/* The main pane is the scroll container on a desktop and the document is on
+ * a phone, so both are reset: scrolling only the window would leave a detail
+ * view opened halfway down. */
+function toTop(){
+  var main = document.querySelector('.main');
+  if (main) { main.scrollTop = 0; }
   window.scrollTo(0,0);
 }
 

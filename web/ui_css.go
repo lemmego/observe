@@ -82,14 +82,39 @@ const dashboardCSS = `
   --shadow:0 1px 2px rgba(15,23,42,.06);
 }
 
+html{background:var(--bg)}
 body{font:14px/1.5 -apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",sans-serif;
   background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 
 /* ---- frame ------------------------------------------------------------ */
+/*
+ * The document does not scroll on a desktop; the main pane does.
+ *
+ * That is what stops macOS rubber-banding, and the reason is specific: an
+ * elastic overscroll drags the whole document past its end, and a
+ * position:sticky header is positioned against that document — so the header
+ * detaches and rides the bounce, and the area it leaves behind is the html
+ * background rather than the page. Clamping the scroll to an inner container
+ * leaves nothing for the bounce to pull.
+ *
+ * overscroll-behavior:contain is the second half: without it a scroll that
+ * reaches the end of .main chains back up to the document and bounces that
+ * instead, which looks identical to the problem it was meant to fix.
+ *
+ * html keeps a background anyway, because a browser that honours none of
+ * this should still bounce in the theme's colour rather than in white.
+ */
 .app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
 .side{border-right:1px solid var(--line);background:var(--panel);padding:16px 0;
-  position:sticky;top:0;height:100vh;overflow-y:auto}
+  position:sticky;top:0;height:100vh;overflow-y:auto;overscroll-behavior:contain}
+
+@media (min-width:861px){
+  html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+  .app{height:100vh;min-height:0}
+  .side{position:static;height:100%}
+  .main{height:100%;overflow-y:auto;overscroll-behavior:contain}
+}
 .brand{padding:0 16px 14px;display:flex;align-items:baseline;gap:8px}
 .brand b{font-size:16px;font-weight:650;letter-spacing:-.01em}
 .brand span{font-size:11px;color:var(--faint)}
