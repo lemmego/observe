@@ -41,6 +41,10 @@ tr.row:hover td{background:#1e293b}
 .kind.outbound{background:#155e75;color:#a5f3fc}
 .kind.notification{background:#581c87;color:#e9d5ff}
 .kind.dump{background:#365314;color:#d9f99d}
+.kind.view{background:#312e81;color:#c7d2fe}
+.kind.gate{background:#713f12;color:#fef08a}
+.kind.event{background:#134e4a;color:#99f6e4}
+.kind.schedule{background:#451a03;color:#fed7aa}
 .sum{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-word}
 .dur{color:#94a3b8;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .bad .sum{color:#fca5a5}
@@ -70,6 +74,10 @@ tr.row:hover td{background:#1e293b}
     <option value="outbound">outbound calls</option>
     <option value="notification">notifications</option>
     <option value="dump">dumps</option>
+    <option value="view">views</option>
+    <option value="gate">gate checks</option>
+    <option value="event">events</option>
+    <option value="schedule">scheduled runs</option>
   </select>
   <select id="level">
     <option value="">every level</option>

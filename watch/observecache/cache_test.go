@@ -104,19 +104,30 @@ func TestTheCachedValueIsNotRecorded(t *testing.T) {
 	}
 }
 
-// TestCacheEntriesAreUncorrelated states the limitation as a test, so a
-// future change to cache.Listener that adds a context is noticed here rather
-// than leaving this package quietly dropping an id it could now carry.
-func TestCacheEntriesAreUncorrelated(t *testing.T) {
+// TestCacheEntriesCarryTheRequestsID.
+//
+// This test used to assert the opposite, under a comment saying that if
+// cache.Listener ever took a context this package should carry the id and the
+// test should be inverted rather than deleted. cache v0.3.0 did, so it is
+// inverted.
+//
+// It is the whole value of the cache panel: a cache that is being missed
+// looks exactly like a cache that is working until the misses can be read
+// beside the queries they failed to prevent.
+func TestCacheEntriesCarryTheRequestsID(t *testing.T) {
 	store := observememory.New()
 	recorder := observe.New(store)
 	c := newCache(t)
 	observecache.Watch(c, recorder)
 
-	// Even with a request id in scope, the listener has no context to read it
-	// from: cache.Listener is func(Event).
 	ctx := observe.WithRequestID(context.Background(), "req-1")
 	if err := c.Put(ctx, "k", "v", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.GetAs[string](ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.GetAs[string](ctx, "absent"); err != nil {
 		t.Fatal(err)
 	}
 	if err := recorder.Close(context.Background()); err != nil {
@@ -129,13 +140,16 @@ func TestCacheEntriesAreUncorrelated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("nothing was recorded")
+	if len(entries) != 3 {
+		t.Fatalf("recorded %d cache entries for a write, a hit and a miss, want 3", len(entries))
 	}
-	if entries[0].RequestID != "" {
-		t.Errorf("RequestID = %q. If cache.Listener now takes a context, this "+
-			"package should carry the id and this test should be inverted "+
-			"rather than deleted.", entries[0].RequestID)
+	// Every one of them, because each event is dispatched from a different
+	// place in cache and a missed one would be silent — an entry with no
+	// request id is indistinguishable from a lookup made outside a request.
+	for _, entry := range entries {
+		if entry.RequestID != "req-1" {
+			t.Errorf("%s has RequestID %q, want the request's", entry.Summary, entry.RequestID)
+		}
 	}
 }
 
@@ -147,7 +161,7 @@ func TestWatchingIsAdditive(t *testing.T) {
 	c := newCache(t)
 
 	mine := 0
-	c.Listen(cache.EventKeyWritten, func(cache.Event) { mine++ })
+	c.Listen(cache.EventKeyWritten, func(context.Context, cache.Event) { mine++ })
 	observecache.Watch(c, recorder)
 
 	if err := c.Put(context.Background(), "k", "v", time.Minute); err != nil {

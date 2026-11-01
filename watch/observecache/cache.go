@@ -1,25 +1,22 @@
 // Package observecache records cache operations.
 //
-// # These entries are not correlated to a request, and cannot be
+// Entries carry the request id of whatever caused them, so a request view
+// shows the lookups it made in order beside its queries — which is the whole
+// point, because a cache that is being missed looks exactly like a cache
+// that is working until you can see the misses next to the queries they
+// failed to prevent.
 //
-// cache.Listener is func(Event) — no context.Context. So although the
-// listener runs synchronously on the goroutine that caused the operation,
-// there is nowhere to read a request id from, and a cache entry therefore
-// carries none.
-//
-// That is worth knowing before reading a request view and wondering where the
-// cache went. Hit and miss rates and what is being written are still
-// legible in the entry list; "which cache lookups did this request make" is
-// not, and will not be until cache.Listener takes a context.
+// That needs cache v0.3.0 or later, where cache.Listener became
+// func(context.Context, Event). Before it there was nowhere to read a
+// request id from and these entries stood alone.
 //
 // Install it after the cache provider, which is what owns the *cache.Cache:
 //
 //	observecache.Watch(cache.FromApp(a), recorder)
 //
 // Through Listen rather than the provider's app.Dispatch bridge, which is
-// gated on cache.events being configured on, is a single-slot sink, and —
-// since app.Dispatch also takes no context — would lose nothing but gain
-// nothing either.
+// gated on cache.events being configured on and is a single-slot sink an
+// application's own observer would have to fight for.
 package observecache
 
 import (
@@ -53,7 +50,7 @@ func Watch(c *cache.Cache, recorder *observe.Recorder) {
 		// Captured per iteration, or every listener would describe whatever
 		// the last one was.
 		summarise := describe
-		c.Listen(name, func(event cache.Event) {
+		c.Listen(name, func(ctx context.Context, event cache.Event) {
 			summary, payload := summarise(event)
 			entry := observe.Entry{
 				Kind:    observe.KindCache,
@@ -64,9 +61,7 @@ func Watch(c *cache.Cache, recorder *observe.Recorder) {
 			if data, err := json.Marshal(payload); err == nil {
 				entry.Data = data
 			}
-			// context.Background rather than a request's: there is no context
-			// on this seam. See the package documentation.
-			recorder.Record(context.Background(), entry)
+			recorder.Record(ctx, entry)
 		})
 	}
 

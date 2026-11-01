@@ -4,11 +4,13 @@ go 1.27
 
 require (
 	github.com/glebarez/go-sqlite v1.23.0
-	github.com/lemmego/api v0.8.0
-	github.com/lemmego/cache v0.2.2
+	github.com/lemmego/api v0.10.0
+	github.com/lemmego/auth v0.6.2
+	github.com/lemmego/authz v0.3.0
+	github.com/lemmego/cache v0.3.0
 	github.com/lemmego/mail v0.2.4
-	github.com/lemmego/notify v0.2.3
-	github.com/lemmego/tasker v0.1.6
+	github.com/lemmego/notify v0.3.0
+	github.com/lemmego/tasker v0.2.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/spf13/cobra v1.8.1
 )
@@ -23,6 +25,7 @@ require (
 	github.com/gertd/go-pluralize v0.2.1 // indirect
 	github.com/go-redis/redis/v8 v8.11.5 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

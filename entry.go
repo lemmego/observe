@@ -62,6 +62,33 @@ const (
 
 	// KindNotification is one notification delivered, or not, on one channel.
 	KindNotification Kind = "notification"
+
+	// KindView is one view rendered, with how long it took.
+	//
+	// The panel exists for one question — why is this page slow when the
+	// queries are fast — and it is the only one a query entry cannot
+	// answer, because a template that loops over an already-loaded relation
+	// issues no statements at all.
+	KindView Kind = "view"
+
+	// KindGate is one authorization decision.
+	//
+	// Recorded whether it allowed or denied, because the interesting case is
+	// the denial nobody expected and the allow nobody intended, and a panel
+	// showing only refusals cannot show the second.
+	KindGate Kind = "gate"
+
+	// KindEvent is one application event dispatched.
+	KindEvent Kind = "event"
+
+	// KindSchedule is one firing of a scheduled job.
+	//
+	// Separate from KindJob because a scheduled run and the job it queues
+	// answer different questions: the queue says what work exists, the
+	// schedule says whether 4:20 came round and what happened when it did —
+	// including a run that failed to enqueue at all, which leaves no job to
+	// look at.
+	KindSchedule Kind = "schedule"
 )
 
 // Entry is one recorded thing.

@@ -101,9 +101,13 @@ nothing and says nothing about it. `observe:last` prints which are active.
 | `cache` | `observecache.Watch(cache, observe.Default())` | the cache |
 | `job` | `observejob.Watch(observe.Default())` | |
 | `mail` | `Transport: observemail.Watch(transport, observe.Default())` | the transport |
-| `notification` | `EventSink: observenotify.Sink()` on notify's provider | notify v0.2.3 |
+| `notification` | `EventSink: observenotify.Sink()` on notify's provider | notify v0.3.0 |
 | `httpclient` | `&http.Client{Transport: observe.WrapTransport(nil)}` | |
 | `dump` | `observe.Dump(ctx, "label", value)` where you want it | |
+| `authz` | `observeauthz.Watch(registry, observe.Default())` | authz v0.3.0 |
+| `view` | `observeview.Watch(observe.Default())` | api v0.10.0 |
+| `event` | `observeevents.Watch(a, observe.Default(), "launch.published", …)` | api v0.10.0 |
+| `schedule` | `observeschedule.Watch(sched, observe.Default())` | tasker v0.2.0 |
 
 `observe.Default()` is nil until the provider has run, and `LoadProviders`
 builds its whole slice before any provider runs — so a watcher constructed
@@ -178,10 +182,105 @@ for a wrapper of your own. A `Channel` may also implement `BulkChannel`,
 all four — so a decorator would have to reproduce every combination of them
 or silently switch the features off.
 
-The cost is correlation: `notify.Event` carries no `context.Context`, so an
-entry cannot say which request caused it. What was sent, to whom, on which
-channel and whether it failed are all legible; "what did this request
-notify" is not. Same shape as the cache watcher.
+Entries carry the request id, so "what did this request tell people" is
+answerable — which needs notify v0.3.0, where `notify.Listener` gained a
+context. A notification sent from a job or a command has no request behind
+it, and the entry says `correlation: unavailable` rather than leaving the
+field blank, so a reader stops looking for a cause that was never recorded.
+
+Never the rendered body. A notification's body is the message somebody
+received, and it holds whatever the template put in it.
+
+### Authorization decisions
+
+```go
+observeauthz.Watch(authz.FromApp(a), observe.Default())
+```
+
+Both outcomes, not just refusals. A panel showing only denials cannot show
+the allow nobody intended, and the two failures are symmetrical: a rule that
+is too tight produces a complaint, a rule that is too loose produces nothing
+at all until it matters.
+
+It also sees the denials `authz` reaches **without consulting a rule** — an
+unregistered ability, a gate called with a resource, an anonymous request.
+Those are the ones worth having: `authz` fails closed, so a typo in an
+ability name is an ordinary-looking 403, and this is what stops it looking
+ordinary.
+
+The subject and the resource are your types, so only their types are
+recorded, plus the subject's id. A user struct holds an email address and a
+password hash; who was refused what is legible, the contents of either value
+are not. A refusal records at **warn**, not error — a refusal is the system
+working, and error level would make the errors view useless on any
+application that refuses anything.
+
+### Views
+
+```go
+observeview.Watch(observe.Default())
+```
+
+One question, and it is the only one a query entry cannot answer: why is this
+page slow when the queries are fast. A template looping over an
+already-loaded relation issues no statements at all, so before this it looked
+identical to a fast page.
+
+The view's name comes from `app.ViewNamer`, which `res.Template` and
+`inertia.InertiaResponse` implement — so you get `Profile/Show`, not
+`*inertia.InertiaResponse`. Both render paths are covered: `ctx.Render` and
+`ctx.Templ`, which takes a component directly and never reaches `Render`.
+
+No props and no output. An Inertia page's props **are** the response body.
+
+### Application events
+
+```go
+observeevents.Watch(a, observe.Default(), "launch.published", "comment.created")
+```
+
+`app.Dispatch` is in-process and synchronous, so an event leaves nothing
+behind: whether it fired at all is not recoverable afterwards, and a feature
+whose cross-cutting reaction never happens looks identical to one whose
+listener is broken.
+
+You have to name the events. The emitter's only registration takes a name, so
+there is no "every event" to offer, and covering some of them silently would
+be worse than asking. Not the payload either — an application's payloads are
+its own domain objects, and a `*models.User` is a plausible one.
+
+### Scheduled runs
+
+```go
+observeschedule.Watch(sched, observe.Default())
+```
+
+Separate from the job watcher because the queue says what work exists and the
+schedule says whether 04:20 came round. And a run that **failed to enqueue**
+leaves no job row at all, so without this it did not happen as far as the
+queue is concerned — which is the failure the panel exists for.
+
+### Jobs, both halves
+
+```go
+observejob.Watch(observe.Default())   // in every process that queues or runs jobs
+```
+
+An enqueue and an execution are two entries and they are **linked**. The
+dispatch middleware stamps the queueing request's id into the job row's
+metadata; the execution middleware reads it back off the row the worker puts
+on the context. So an execution names the request that queued it even though
+it happened minutes later in another process, and `queued_by` is that link.
+
+The execution deliberately gets its **own** correlation id rather than
+reusing the request's. Reusing it would file a worker's queries under a web
+request that finished minutes earlier, which reads as one impossibly long
+request.
+
+Needs tasker v0.2.1. Before v0.2.0 there was no dispatch hook at all, so a
+job queued and never picked up looked exactly like a job nobody queued —
+which is the difference between "no worker is running" and "the dispatch call
+is not being reached".
 
 ## Record your queries
 
@@ -310,18 +409,17 @@ somewhere else". The provider warns when it falls back to it.
 
 ## Limits worth knowing before you go looking
 
-**Cache operations are not correlated to a request**, and cannot be:
-`cache.Listener` is `func(Event)` with no `context.Context`, so there is
-nowhere to read a request id from. Hit and miss rates are legible; "which
-lookups did this request make" is not.
+**Three of these used to be here and are not any more.** Cache operations,
+notifications and job enqueues were all uncorrelated because their seams took
+no context, and all three now do: `cache` v0.3.0, `notify` v0.3.0 and
+`tasker` v0.2.1. If an entry still has no request id, the pin is behind.
 
-**Notifications are not correlated either**, for the same reason:
-`notify.Event` carries no `context.Context`. What was sent and whether it
-arrived is legible; which request caused it is not.
+**A job execution does not share its queueing request's id**, deliberately.
+It carries `queued_by` instead. See **Jobs, both halves** above.
 
-**A job correlates to itself, not to the request that queued it.**
-`tasker.Manager.Dispatch` has no hook, so enqueueing is not observable at all,
-and a job runs in another process anyway.
+**The event watcher only sees the events you name.** `app.On` takes a name
+and the emitter has no "every event", so there is nothing to subscribe to
+wholesale.
 
 **A driver offering only the legacy non-context interfaces** records its
 statements uncorrelated rather than dropping them, and the entry says

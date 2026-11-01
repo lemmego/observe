@@ -8,11 +8,10 @@
 // http.Hijacker bug this repository has now paid for twice, and the sink
 // exists precisely so an observer does not have to risk it.
 //
-// The cost is correlation: notify.Event carries no context.Context, so an
-// entry cannot say which request caused it. What was sent, to whom, on which
-// channel and whether it failed are all legible; "what did this request
-// notify" is not. Same shape as the cache watcher, and the same fix when it
-// comes.
+// Entries carry the request id of whatever sent the notification, so "what
+// did this request notify" is answerable. That needs notify v0.3.0 or later,
+// where notify.Listener became func(context.Context, Event); before it the
+// seam had no context and an entry said so instead.
 package observenotify
 
 import (
@@ -42,7 +41,11 @@ type notificationPayload struct {
 	RecipientKind string `json:"recipient_kind,omitempty"`
 	RecipientID   string `json:"recipient_id,omitempty"`
 
-	Correlation string `json:"correlation"`
+	// Correlation says why an entry has no request id, when it has none,
+	// so a reader stops looking for a cause that was never recorded. A
+	// notification sent from a background job or a command has none, which
+	// is ordinary.
+	Correlation string `json:"correlation,omitempty"`
 }
 
 // Sink returns a listener for notify.WithEventSink.
@@ -72,7 +75,7 @@ type notificationPayload struct {
 // twice, and a store with both would show every notification once for being
 // attempted and once for the outcome.
 func Sink() notify.Listener {
-	return func(event notify.Event) {
+	return func(ctx context.Context, event notify.Event) {
 		recorder := observe.Default()
 		if recorder == nil {
 			return

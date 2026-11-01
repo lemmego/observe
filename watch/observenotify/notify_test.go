@@ -43,7 +43,7 @@ func drain(t *testing.T, recorder *observe.Recorder, store observe.Store) []obse
 func TestADeliveredNotificationIsRecorded(t *testing.T) {
 	recorder, store := recording(t)
 
-	observenotify.Sink()(notify.Sent{
+	observenotify.Sink()(context.Background(), notify.Sent{
 		Channel:      "mail",
 		Notification: "*notifications.Matched",
 		OwnerKind:    "user",
@@ -72,8 +72,9 @@ func TestADeliveredNotificationIsRecorded(t *testing.T) {
 	if payload.RecipientKind != "user" || payload.RecipientID != "7" {
 		t.Errorf("payload does not say who it went to: %+v", payload)
 	}
-	// Said rather than left blank, so a reader stops hunting for a request
-	// that was never recorded. notify.Event carries no context.
+	// Sent with no request behind it, which is what a background job looks
+	// like. Said rather than left blank, so a reader stops hunting for a
+	// request that was never recorded.
 	if payload.Correlation != "unavailable" {
 		t.Errorf("correlation = %q, want it stated", payload.Correlation)
 	}
@@ -82,7 +83,7 @@ func TestADeliveredNotificationIsRecorded(t *testing.T) {
 func TestAFailedNotificationIsRecordedAsAnError(t *testing.T) {
 	recorder, store := recording(t)
 
-	observenotify.Sink()(notify.Failed{
+	observenotify.Sink()(context.Background(), notify.Failed{
 		Channel:      "mail",
 		Notification: "*notifications.Matched",
 		OwnerKind:    "user",
@@ -111,8 +112,8 @@ func TestSendingIsNotRecorded(t *testing.T) {
 	recorder, store := recording(t)
 
 	sink := observenotify.Sink()
-	sink(notify.Sending{Channel: "mail", Notification: "*notifications.Matched"})
-	sink(notify.Sent{Channel: "mail", Notification: "*notifications.Matched"})
+	sink(context.Background(), notify.Sending{Channel: "mail", Notification: "*notifications.Matched"})
+	sink(context.Background(), notify.Sent{Channel: "mail", Notification: "*notifications.Matched"})
 
 	found := drain(t, recorder, store)
 	if len(found) != 1 {
@@ -129,7 +130,7 @@ func TestSendingIsNotRecorded(t *testing.T) {
 func TestNoRecipientContactDetailsAreRecorded(t *testing.T) {
 	recorder, store := recording(t)
 
-	observenotify.Sink()(notify.Sent{
+	observenotify.Sink()(context.Background(), notify.Sent{
 		Channel:      "mail",
 		Notification: "*notifications.Matched",
 		OwnerKind:    "user",
@@ -150,5 +151,5 @@ func TestItDoesNothingWithNoRecorder(t *testing.T) {
 	observe.SetDefault(nil)
 	// The assertion is that this does not panic and does not reach for a
 	// store that is not there.
-	observenotify.Sink()(notify.Sent{Channel: "mail", Notification: "x"})
+	observenotify.Sink()(context.Background(), notify.Sent{Channel: "mail", Notification: "x"})
 }
