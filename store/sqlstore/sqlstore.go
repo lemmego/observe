@@ -305,6 +305,51 @@ func (s *Store) Prune(ctx context.Context, before time.Time) (int64, error) {
 	return removed, nil
 }
 
+// Counts reports how many entries of each kind were recorded at or after a
+// time.
+//
+// One statement grouped by kind rather than one per kind: the sidebar asks
+// for every count at once, and fourteen round trips to draw a nav list would
+// make the dashboard the slowest page in the application it is debugging.
+// The (kind, recorded_at) index serves it.
+func (s *Store) Counts(ctx context.Context, since time.Time) (map[observe.Kind]int64, error) {
+	ctx = observe.WithoutRecording(ctx)
+
+	query := "SELECT kind, COUNT(*) FROM " + s.table
+	var args []any
+	if !since.IsZero() {
+		query += " WHERE recorded_at >= " + s.placeholder(1)
+		args = append(args, since.UTC())
+	}
+	query += " GROUP BY kind"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("observe/sqlstore: counting entries: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Debug("observe/sqlstore: closing rows", "error", cerr)
+		}
+	}()
+
+	counts := map[observe.Kind]int64{}
+	for rows.Next() {
+		var (
+			kind  string
+			count int64
+		)
+		if err := rows.Scan(&kind, &count); err != nil {
+			return nil, fmt.Errorf("observe/sqlstore: counting entries: %w", err)
+		}
+		counts[observe.Kind(kind)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("observe/sqlstore: counting entries: %w", err)
+	}
+	return counts, nil
+}
+
 // scanner is what both QueryRow and Rows satisfy.
 type scanner interface {
 	Scan(dest ...any) error

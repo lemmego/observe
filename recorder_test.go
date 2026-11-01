@@ -36,6 +36,10 @@ func (s *blockingStore) Entry(context.Context, string) (observe.Entry, error) {
 }
 func (s *blockingStore) Prune(context.Context, time.Time) (int64, error) { return 0, nil }
 
+func (s *blockingStore) Counts(context.Context, time.Time) (map[observe.Kind]int64, error) {
+	return nil, nil
+}
+
 // TestRecordingNeverBlocksTheCaller is the invariant the whole design turns
 // on.
 //

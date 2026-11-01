@@ -95,4 +95,15 @@ type Store interface {
 	// Retention is the store's only defence against unbounded growth, so this
 	// is part of the contract rather than an extra a store may decline.
 	Prune(ctx context.Context, before time.Time) (int64, error)
+
+	// Counts reports how many entries of each kind were recorded at or after
+	// a time. A zero time counts everything.
+	//
+	// Part of the contract rather than something the dashboard works out for
+	// itself, because it cannot: a page of entries is a page, and counting
+	// what is on it would answer "how many exceptions are in the last fifty
+	// rows" — which is not a question anybody has. A kind with no entries is
+	// omitted rather than reported as zero, so a caller can tell "none" from
+	// "a kind this store has never heard of".
+	Counts(ctx context.Context, since time.Time) (map[Kind]int64, error)
 }

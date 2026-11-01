@@ -19,6 +19,13 @@ import (
 	"github.com/lemmego/observe"
 )
 
+// CountWindow is how far back the sidebar counts.
+//
+// An hour: long enough that a quiet minute does not read as an idle
+// application, short enough that the number means something about now. A
+// count over all of history only ever goes up.
+const CountWindow = time.Hour
+
 // Server is the dashboard.
 //
 // Closed until authentication is configured. Entries hold request headers,
@@ -88,7 +95,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET "+s.p("/api/entries/{id}"), s.handleEntry)
 	s.mux.HandleFunc("GET "+s.p("/api/stats"), s.handleStats)
 	s.mux.HandleFunc("GET "+s.p("/api/tail"), s.handleTail)
+	s.mux.HandleFunc("GET "+s.p("/api/counts"), s.handleCounts)
 	s.mux.HandleFunc("POST "+s.p("/api/pause"), s.handlePause)
+	s.mux.HandleFunc("POST "+s.p("/api/clear"), s.handleClear)
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
@@ -192,6 +201,66 @@ func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"data": entry})
+}
+
+// handleCounts reports how many entries of each kind were recorded recently.
+//
+// Recently rather than ever, because a sidebar count that only grows tells a
+// reader nothing about now — "4,812 queries" is the same number before and
+// after the thing they are debugging.
+func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request) {
+	store := s.store()
+	if store == nil {
+		writeError(w, http.StatusServiceUnavailable, "observe: recording is off")
+		return
+	}
+
+	window := CountWindow
+	if raw := r.URL.Query().Get("minutes"); raw != "" {
+		minutes, err := strconv.Atoi(raw)
+		if err != nil || minutes <= 0 {
+			writeError(w, http.StatusBadRequest, "observe: minutes must be a positive number")
+			return
+		}
+		window = time.Duration(minutes) * time.Minute
+	}
+
+	counts, err := store.Counts(r.Context(), time.Now().Add(-window))
+	if err != nil {
+		slog.Error("observe: counting entries for the dashboard", "error", err)
+		writeError(w, http.StatusInternalServerError, "observe: entries could not be counted")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"counts":  counts,
+		"minutes": int(window / time.Minute),
+	})
+}
+
+// handleClear deletes every recorded entry.
+//
+// Through Prune with a cutoff of now rather than a separate truncate,
+// because retention is already the store's one defence against unbounded
+// growth and a second deletion path would be a second thing to get wrong.
+//
+// POST, and the UI confirms first: this is the one control here that
+// destroys something, and the thing it destroys is the evidence somebody
+// opened the page to read.
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	store := s.store()
+	if store == nil {
+		writeError(w, http.StatusServiceUnavailable, "observe: recording is off")
+		return
+	}
+
+	removed, err := store.Prune(r.Context(), time.Now())
+	if err != nil {
+		slog.Error("observe: clearing entries", "error", err)
+		writeError(w, http.StatusInternalServerError, "observe: entries could not be cleared")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 // handlePause stops or starts this process recording.

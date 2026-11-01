@@ -51,6 +51,8 @@ func Run(t *testing.T, newStore Factory) {
 		{"tags round-trip", tagsRoundTrip},
 		{"a tag filter needs every tag", aTagFilterNeedsEveryTag},
 		{"a tag filter does not match a longer tag", aTagFilterDoesNotMatchALongerTag},
+		{"counts are grouped by kind", countsAreGroupedByKind},
+		{"counts honour a since", countsHonourASince},
 	}
 
 	for _, tc := range cases {
@@ -484,5 +486,51 @@ func aTagFilterDoesNotMatchALongerTag(t *testing.T, store observe.Store) {
 	}
 	if len(found) != 1 || found[0].ID != "seven" {
 		t.Errorf("got %v, want only user:7 — user:70 is a different person", ids(found))
+	}
+}
+
+func countsAreGroupedByKind(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	record(t, store, []observe.Entry{
+		{ID: "r1", Kind: observe.KindRequest, Summary: "GET /"},
+		{ID: "q1", Kind: observe.KindQuery, Summary: "SELECT 1"},
+		{ID: "q2", Kind: observe.KindQuery, Summary: "SELECT 2"},
+		{ID: "q3", Kind: observe.KindQuery, Summary: "SELECT 3"},
+	})
+
+	counts, err := store.Counts(ctx, time.Time{})
+	if err != nil {
+		t.Fatalf("Counts: %v", err)
+	}
+	if counts[observe.KindQuery] != 3 {
+		t.Errorf("queries = %d, want 3", counts[observe.KindQuery])
+	}
+	if counts[observe.KindRequest] != 1 {
+		t.Errorf("requests = %d, want 1", counts[observe.KindRequest])
+	}
+	// Omitted rather than zero, so a caller can tell "none" from "a kind this
+	// store has never heard of".
+	if _, present := counts[observe.KindException]; present {
+		t.Errorf("exceptions are reported as %d; a kind with no entries should "+
+			"be absent", counts[observe.KindException])
+	}
+}
+
+// The sidebar counts a window rather than all of history, or a count is a
+// number that only grows and tells a reader nothing about now.
+func countsHonourASince(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	record(t, store, []observe.Entry{
+		{ID: "old", Kind: observe.KindQuery, Summary: "old", At: now.Add(-2 * time.Hour)},
+		{ID: "new", Kind: observe.KindQuery, Summary: "new", At: now.Add(-time.Minute)},
+	})
+
+	counts, err := store.Counts(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("Counts: %v", err)
+	}
+	if counts[observe.KindQuery] != 1 {
+		t.Errorf("queries in the last hour = %d, want 1", counts[observe.KindQuery])
 	}
 }

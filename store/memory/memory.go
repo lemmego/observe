@@ -146,6 +146,25 @@ func (s *Store) Prune(_ context.Context, before time.Time) (int64, error) {
 	return removed, nil
 }
 
+// Counts reports how many entries of each kind are held at or after a time.
+func (s *Store) Counts(_ context.Context, since time.Time) (map[observe.Kind]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := map[observe.Kind]int64{}
+	for element := s.order.Front(); element != nil; element = element.Next() {
+		entry := element.Value.(observe.Entry)
+		if !since.IsZero() && entry.At.Before(since) {
+			// The list is newest first, so everything after this is older
+			// too — but entries may be recorded slightly out of order when a
+			// watcher backdates one, so this skips rather than stops.
+			continue
+		}
+		counts[entry.Kind]++
+	}
+	return counts, nil
+}
+
 // Len reports how many entries are held, for a test.
 func (s *Store) Len() int {
 	s.mu.RLock()

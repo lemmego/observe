@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -348,28 +349,17 @@ func TestTheTailIsClosedWithoutAuthentication(t *testing.T) {
 // is looking. A missing brace would render the page and then do nothing at
 // all, which reads as "observe is broken" rather than as a typo.
 //
-// Parsed here with the one parser available without a build step: the
-// document is wellformed enough that the script can be cut out by its tags,
-// and every brace, bracket and parenthesis has to balance. Crude, and it
-// catches the class of mistake that actually happens when a 250-line script
-// lives in a string literal.
+// Crude, and it catches the class of mistake that actually happens when 400
+// lines of JavaScript live in a string literal.
 func TestTheDashboardScriptIsSyntacticallyValid(t *testing.T) {
-	server, _ := newServer(t)
-	server.UseAuth(func(next http.Handler) http.Handler { return next })
-
-	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("the dashboard answered %d", recorder.Code)
-	}
-	page := recorder.Body.String()
+	page := servedPage(t)
 
 	open := strings.Index(page, "<script>")
-	close := strings.LastIndex(page, "</script>")
-	if open < 0 || close < open {
+	closing := strings.LastIndex(page, "</script>")
+	if open < 0 || closing < open {
 		t.Fatal("the page has no script block")
 	}
-	script := page[open+len("<script>") : close]
+	script := page[open+len("<script>") : closing]
 
 	// A Go raw string cannot contain a backtick, so a template literal is
 	// unavailable by construction — worth asserting, because the natural way
@@ -400,15 +390,149 @@ func TestTheDashboardScriptIsSyntacticallyValid(t *testing.T) {
 			t.Errorf("%s are unbalanced by %d", pair.name, depth)
 		}
 	}
+}
 
-	// And the handlers the markup refers to by id exist in the script, since
-	// an element with no handler is a button that does nothing.
-	for _, id := range []string{"tail", "pause", "tags", "kind", "level", "q", "reload"} {
-		if !strings.Contains(page, `id="`+id+`"`) {
-			t.Errorf("the markup has no element with id %q", id)
-		}
-		if !strings.Contains(script, `getElementById('`+id+`')`) {
-			t.Errorf("nothing in the script reaches #%s, so the control does nothing", id)
+// TestEveryControlTheMarkupDeclaresIsReachedByTheScript.
+//
+// An element with an id and no handler is a button that does nothing, which
+// is worse than an absent button: it looks like a feature.
+func TestEveryControlTheMarkupDeclaresIsReachedByTheScript(t *testing.T) {
+	page := servedPage(t)
+
+	ids := regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`).FindAllStringSubmatch(page, -1)
+	if len(ids) < 8 {
+		t.Fatalf("found %d elements with ids, which is too few to be the real page", len(ids))
+	}
+	script := page[strings.Index(page, "<script>"):]
+
+	for _, match := range ids {
+		id := match[1]
+		if !strings.Contains(script, "'"+id+"'") && !strings.Contains(script, `"`+id+`"`) {
+			t.Errorf("nothing in the script names #%s, so the element does nothing", id)
 		}
 	}
+}
+
+// TestEveryKindHasAPanel.
+//
+// A kind added to entry.go with no panel in the sidebar is a kind the
+// dashboard silently never shows — the entries are recorded, stored and
+// queryable, and invisible. That is the failure this package exists to
+// prevent, reproduced in its own UI.
+func TestEveryKindHasAPanel(t *testing.T) {
+	page := servedPage(t)
+
+	for _, kind := range []observe.Kind{
+		observe.KindRequest, observe.KindQuery, observe.KindLog, observe.KindCache,
+		observe.KindJob, observe.KindMail, observe.KindException, observe.KindOutbound,
+		observe.KindDump, observe.KindNotification, observe.KindView, observe.KindGate,
+		observe.KindEvent, observe.KindSchedule,
+	} {
+		if !strings.Contains(page, "kind:'"+string(kind)+"'") {
+			t.Errorf("the sidebar has no panel for %q, so those entries are "+
+				"recorded and never shown", kind)
+		}
+	}
+}
+
+func servedPage(t *testing.T) string {
+	t.Helper()
+	server, _ := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the dashboard answered %d", recorder.Code)
+	}
+	return recorder.Body.String()
+}
+
+// TestTheScriptDoesNotCompareLevelsNumerically.
+//
+// slog.Level marshals itself as a string — "INFO", "ERROR", and "ERROR+2"
+// for a level between the named ones — so `e.level >= 8` compares a string
+// with a number, which is NaN, which is false. The dashboard carried that
+// comparison for its whole life and the symptom was silence: a 500 looked
+// exactly like a 200 unless it also carried an error string, and every entry
+// rendered as DEBUG.
+//
+// A Go test cannot run the JavaScript, so it guards the shape instead. That
+// is worth having precisely because the bug is invisible — nothing throws,
+// nothing logs, the page just quietly stops meaning anything.
+func TestTheScriptDoesNotCompareLevelsNumerically(t *testing.T) {
+	page := servedPage(t)
+
+	for _, bad := range []string{"e.level >=", "e.level >", "e.level <", "entry.level >="} {
+		if strings.Contains(page, bad) {
+			t.Errorf("the script contains %q. slog.Level arrives as a string, so "+
+				"that comparison is always false — route it through levelOf().", bad)
+		}
+	}
+	if !strings.Contains(page, "function levelOf(") {
+		t.Error("the script has no levelOf(), so nothing is parsing slog's string levels")
+	}
+}
+
+// TestTheHeaderIsSticky.
+//
+// The list is the one thing here that is always long, so a panel title you
+// cannot see and a Live button you have to scroll back up to reach are the
+// two things a live tail makes worse.
+func TestTheHeaderIsSticky(t *testing.T) {
+	page := servedPage(t)
+
+	for _, want := range []string{
+		".head{position:sticky",
+		".bar{position:sticky",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the stylesheet has no rule starting %q", want)
+		}
+	}
+	// Measured rather than guessed: the controls wrap at narrow widths, and a
+	// hardcoded offset leaves a gap on one layout and an overlap on the other.
+	if !strings.Contains(page, "--headh") || !strings.Contains(page, "setProperty('--headh'") {
+		t.Error("the sticky offset is not measured from the header's real height")
+	}
+}
+
+// TestBothThemesDefineEverySemanticColour.
+//
+// A light theme that redefines the greys and leaves the severity colours
+// alone is a theme where half the page is unreadable — pale-on-pale pills,
+// white text on white chips. Every token the dark palette declares has to
+// exist in the light one, and this counts them rather than trusting that.
+func TestBothThemesDefineEverySemanticColour(t *testing.T) {
+	page := servedPage(t)
+
+	root := between(page, ":root{", "}")
+	light := between(page, `:root[data-theme="light"]{`, "}")
+	if root == "" || light == "" {
+		t.Fatal("could not find both palettes in the stylesheet")
+	}
+
+	for _, token := range strings.Split(root, ";") {
+		name, _, found := strings.Cut(strings.TrimSpace(token), ":")
+		if !found || !strings.HasPrefix(name, "--") {
+			continue
+		}
+		if !strings.Contains(light, name+":") {
+			t.Errorf("the light palette does not define %s, so that colour keeps "+
+				"its dark value on a light page", name)
+		}
+	}
+}
+
+func between(s, open, close string) string {
+	start := strings.Index(s, open)
+	if start < 0 {
+		return ""
+	}
+	rest := s[start+len(open):]
+	end := strings.Index(rest, close)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
