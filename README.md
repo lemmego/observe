@@ -110,8 +110,11 @@ provider of your own, registered after the things they watch.
 ### Exceptions
 
 `observehttp.Recover()` **replaces** the recovering middleware you already
-have rather than joining it. Two recoverers is not twice the safety: the
-outer one wins and the inner one never fires.
+have rather than joining it. Two recoverers is not twice the safety: a panic
+unwinds outward, so the one nearest the handler catches it and the other
+never fires. This one has to be the nearest, or it records nothing —
+replacing yours rather than adding to it is the only arrangement that
+guarantees that.
 
 ```go
 // bootstrap/http_middleware.go

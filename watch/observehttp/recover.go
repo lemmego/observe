@@ -47,8 +47,10 @@ type exceptionPayload struct {
 // Recover returns middleware that records a panic and then answers 500.
 //
 // Install it where the application's existing recoverer goes, and remove
-// that one — two recoverers is not twice the safety, it is one of them
-// never firing, and the outer one wins.
+// that one. Two recoverers is not twice the safety: a panic unwinds outward,
+// so the one nearest the handler catches it and the other never fires. This
+// has to be the nearest, or it records nothing — replacing rather than
+// adding is the only arrangement that guarantees it.
 //
 // # Ordering
 //
