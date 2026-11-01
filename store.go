@@ -72,6 +72,40 @@ type Query struct {
 // ErrNoEntry reports that an id names no entry.
 var ErrNoEntry = errors.New("observe: no such entry")
 
+// Sink receives batches of entries.
+//
+// The write half of [Store], split out so somewhere to send entries does not
+// have to be somewhere to read them back from. An exporter shipping to a
+// collector cannot answer Entries or Counts, and making it return an error
+// from four methods it has no business implementing would be a lie told four
+// times.
+//
+// # Record must not block
+//
+// It is called on the recorder's writer goroutine, which is the one thing
+// standing between a slow destination and the queue filling up. A sink that
+// waits on a network does its waiting on its own goroutine and accepts the
+// batch into a bounded buffer of its own — which is what observe/export does,
+// and why it exists rather than a transport being a Sink directly.
+//
+// Returning an error is for reporting, not for retrying: the recorder counts
+// it and logs it and moves on, because it has nowhere to put a batch it
+// cannot hand over.
+type Sink interface {
+	Record(ctx context.Context, entries []Entry) error
+}
+
+// SinkCloser is a sink with a lifecycle.
+//
+// A sink holding a buffer or a connection needs telling when to let go, and
+// the recorder closes every sink that says so when it closes itself — so an
+// exporter flushes what it is holding on a graceful shutdown rather than
+// taking it to the grave.
+type SinkCloser interface {
+	Sink
+	Close(ctx context.Context) error
+}
+
 // Store persists entries.
 //
 // Record takes a slice because the recorder batches: a request that issues
@@ -83,7 +117,7 @@ var ErrNoEntry = errors.New("observe: no such entry")
 // because the dashboard pages on it and a store that returned an extra row
 // would show a duplicate at every page boundary.
 type Store interface {
-	Record(ctx context.Context, entries []Entry) error
+	Sink
 	Entries(ctx context.Context, q Query) ([]Entry, error)
 
 	// Entry returns one entry, or an error satisfying

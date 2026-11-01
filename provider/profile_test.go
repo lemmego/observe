@@ -1,7 +1,13 @@
 package provider_test
 
 import (
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lemmego/api/app"
@@ -112,4 +118,110 @@ func TestAnExplicitSamplerBeatsTheEnvironment(t *testing.T) {
 	if !recorder.ShouldSampleRequest(observe.NewID()) {
 		t.Error("the explicit Sampler was overridden by the environment")
 	}
+}
+
+// TestAConfiguredExporterIsWiredAndClosed.
+//
+// One variable, like the profile. And the closing half matters as much as
+// the wiring: an exporter that is never closed takes whatever it is holding
+// to the grave on every graceful shutdown.
+func TestAConfiguredExporterIsWiredAndClosed(t *testing.T) {
+	var received atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Entries []observe.Entry `json:"entries"`
+		}
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if err := json.NewDecoder(reader).Decode(&envelope); err == nil {
+			received.Add(int64(len(envelope.Entries)))
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("OBSERVE_EXPORT_URL", server.URL)
+	t.Setenv("OBSERVE_EXPORT_TOKEN", "a-token")
+	t.Setenv("OBSERVE_ENABLED", "true")
+
+	p := &provider.Provider{}
+	engine := app.Configure()
+	if err := p.Provide(engine); err != nil {
+		t.Fatalf("providing: %v", err)
+	}
+	recorder := p.Recorder()
+	if recorder == nil {
+		t.Fatal("no recorder")
+	}
+	t.Cleanup(func() { observe.SetDefault(nil) })
+
+	if recorder.Sinks() != 1 {
+		t.Fatalf("Sinks() = %d, want the configured exporter", recorder.Sinks())
+	}
+
+	recorder.Record(context.Background(), observe.Entry{
+		Kind: observe.KindQuery, Summary: "SELECT 1",
+	})
+
+	// Shutdown drains the recorder and then closes the sink, so the entry
+	// reaches the collector without waiting out a flush interval.
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutting down: %v", err)
+	}
+
+	if got := received.Load(); got == 0 {
+		t.Error("the collector received nothing; either the sink was not wired " +
+			"or it was not closed at shutdown")
+	}
+}
+
+// A configured endpoint that will not build is a boot error. An application
+// that starts, looks healthy and ships nothing is the worse outcome.
+func TestABrokenExportEndpointRefusesToBoot(t *testing.T) {
+	t.Setenv("OBSERVE_ENABLED", "true")
+	t.Setenv("OBSERVE_EXPORT_URL", "   ")
+
+	// Whitespace trims to empty, which means "not configured" rather than
+	// "configured wrongly" — so this one boots with no sink.
+	p := &provider.Provider{}
+	if err := p.Provide(app.Configure()); err != nil {
+		t.Fatalf("providing: %v", err)
+	}
+	t.Cleanup(func() { observe.SetDefault(nil); _ = p.Shutdown(context.Background()) })
+
+	if got := p.Recorder().Sinks(); got != 0 {
+		t.Errorf("Sinks() = %d for an unset endpoint", got)
+	}
+}
+
+// An explicit Sinks field beats the environment, because a field set in code
+// is a decision somebody wrote down.
+func TestAnExplicitSinkBeatsTheEnvironment(t *testing.T) {
+	t.Setenv("OBSERVE_EXPORT_URL", "http://127.0.0.1:1/never")
+
+	mine := &countingSink{}
+	recorder := booted(t, &provider.Provider{Sinks: []observe.Sink{mine}})
+
+	if recorder.Sinks() != 1 {
+		t.Fatalf("Sinks() = %d", recorder.Sinks())
+	}
+	recorder.Record(context.Background(), observe.Entry{
+		Kind: observe.KindQuery, Summary: "SELECT 1",
+	})
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if mine.count.Load() == 0 {
+		t.Error("the explicit sink received nothing; the environment won")
+	}
+}
+
+type countingSink struct{ count atomic.Int64 }
+
+func (s *countingSink) Record(_ context.Context, entries []observe.Entry) error {
+	s.count.Add(int64(len(entries)))
+	return nil
 }

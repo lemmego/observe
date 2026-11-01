@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"github.com/lemmego/api/app"
+	"github.com/lemmego/api/config"
 	"github.com/lemmego/api/db"
 	"github.com/lemmego/observe"
+	"github.com/lemmego/observe/export"
 	"github.com/lemmego/observe/store/memory"
 	"github.com/lemmego/observe/store/sqlstore"
 )
@@ -81,6 +83,17 @@ type Provider struct {
 	// Anything set explicitly here or in Options overrides it.
 	Profile observe.Profile
 
+	// Sinks send every flushed batch somewhere beyond the store — a
+	// collector, a file, anything satisfying observe.Sink.
+	//
+	// Nil defers to OBSERVE_EXPORT_URL, which wires observe/export's HTTP
+	// transport with OBSERVE_EXPORT_TOKEN as its credential. One variable
+	// again, for the same reason the profile is one.
+	//
+	// A sink implementing observe.SinkCloser is closed with the recorder, so
+	// an exporter flushes what it is holding on a graceful shutdown.
+	Sinks []observe.Sink
+
 	// Options are passed to the recorder.
 	Options []observe.Option
 
@@ -140,6 +153,14 @@ func (p *Provider) Provide(a app.App) error {
 			"statements", "normalised",
 			"log_floor", profile.MinLogLevel(),
 			"sample_rate", p.sampleRate(profile))
+	}
+
+	sinks, err := p.sinks(a, profile)
+	if err != nil {
+		return err
+	}
+	if len(sinks) > 0 {
+		options = append(options, observe.WithSinks(sinks...))
 	}
 
 	recorder := observe.New(store, options...)
@@ -217,6 +238,59 @@ func (p *Provider) sampleRate(profile observe.Profile) float64 {
 			"recorded; set it between 0 and 1", "value", raw)
 	}
 	return rate
+}
+
+// sinks resolves where entries are shipped, beyond the store.
+//
+// An explicit Sinks field wins over the environment, for the reason an
+// explicit Sampler does: a field set in code is a decision somebody wrote
+// down, and letting a stray variable override it would make the code lie.
+//
+// A configured endpoint that will not build is a boot error rather than a
+// warning. An exporter is not an optional nicety once somebody has gone to
+// the trouble of configuring one, and the alternative is an application that
+// starts, looks healthy and ships nothing.
+func (p *Provider) sinks(a app.App, profile observe.Profile) ([]observe.Sink, error) {
+	if len(p.Sinks) > 0 {
+		return p.Sinks, nil
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("OBSERVE_EXPORT_URL"))
+	if endpoint == "" {
+		return nil, nil
+	}
+
+	transport, err := export.HTTP(export.HTTPOptions{
+		Endpoint: endpoint,
+		Token:    strings.TrimSpace(os.Getenv("OBSERVE_EXPORT_TOKEN")),
+		Source: export.Source{
+			Service:     config.MustEnv("APP_NAME", ""),
+			Environment: string(profile),
+			Release:     strings.TrimSpace(os.Getenv("OBSERVE_RELEASE")),
+			Host:        hostname(),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("observe: OBSERVE_EXPORT_URL: %w", err)
+	}
+
+	slog.Info("observe: shipping entries to a collector",
+		"endpoint", endpoint, "authenticated", os.Getenv("OBSERVE_EXPORT_TOKEN") != "")
+
+	return []observe.Sink{export.New(transport)}, nil
+}
+
+// hostname names this process's machine, or says it could not.
+//
+// Not an error: a container that will not report its hostname is not a
+// reason to refuse to boot, and "unknown" in a fleet view is more useful
+// than an application that did not start.
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "unknown"
+	}
+	return name
 }
 
 // profile resolves OBSERVE_PROFILE, with an explicit field winning.

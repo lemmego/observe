@@ -127,6 +127,9 @@ type Recorder struct {
 	// subs are the live tails. See subscribe.go.
 	subsMu sync.RWMutex
 	subs   map[*subscriber]struct{}
+
+	// sinks receive every flushed batch alongside the store.
+	sinks []Sink
 }
 
 // Option configures a Recorder.
@@ -226,6 +229,37 @@ func WithoutArgs() Option {
 // time, and reading an already-normalised statement is idempotent.
 func WithNormalisedStatements() Option {
 	return func(r *Recorder) { r.normaliseStatements = true }
+}
+
+// WithSinks sends every flushed batch somewhere beyond the store.
+//
+// A deployment can ship to a collector and keep a small memory ring for the
+// local dashboard, or ship only — the store and the sinks are independent.
+//
+//	observe.New(store, observe.WithSinks(exporter))
+//
+// Deliberately not [Recorder.Subscribe]. A subscriber that falls behind is
+// closed, which is right for a dashboard tail and wrong for a shipper: one
+// slow minute would stop it forever, silently. A sink is handed the batch
+// the store is handed, and owns its own buffering.
+//
+// Sinks are closed when the recorder is, if they implement [SinkCloser].
+func WithSinks(sinks ...Sink) Option {
+	return func(r *Recorder) {
+		for _, sink := range sinks {
+			if sink != nil {
+				r.sinks = append(r.sinks, sink)
+			}
+		}
+	}
+}
+
+// Sinks reports how many sinks are installed, for a diagnostic.
+func (r *Recorder) Sinks() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.sinks)
 }
 
 // WithProfile applies a profile's options.
@@ -527,6 +561,19 @@ func (r *Recorder) Close(ctx context.Context) error {
 		r.wg.Wait()
 		r.drain(ctx)
 		r.closeSubscribers()
+
+		// After the drain, so whatever was still queued has already been
+		// handed to the sinks and an exporter flushes it rather than
+		// discarding it.
+		for _, sink := range r.sinks {
+			closer, ok := sink.(SinkCloser)
+			if !ok {
+				continue
+			}
+			if err := closer.Close(ctx); err != nil {
+				slog.Warn("observe: a sink did not close cleanly", "error", err)
+			}
+		}
 	})
 	return nil
 }
@@ -600,6 +647,23 @@ func (r *Recorder) flush(batch []Entry) {
 		r.failed.Add(uint64(len(batch)))
 		slog.Error("observe: a batch of entries could not be stored",
 			"entries", len(batch), "error", err)
+	}
+
+	// After the store and never instead of it. A sink that fails must not
+	// cost the local dashboard its entries, and a store that fails must not
+	// stop them being shipped — the two destinations answer different
+	// questions and neither is a fallback for the other.
+	for _, sink := range r.sinks {
+		if err := sink.Record(ctx, batch); err != nil {
+			// Counted against the same number as a failed store write,
+			// because from the caller's side the entry went nowhere either
+			// way. Logged at warn rather than error: a sink is usually a
+			// network and usually comes back, where a failing store is the
+			// thing you were relying on.
+			r.failed.Add(uint64(len(batch)))
+			slog.Warn("observe: a batch of entries could not be sent to a sink",
+				"entries", len(batch), "error", err)
+		}
 	}
 }
 

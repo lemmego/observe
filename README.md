@@ -519,6 +519,68 @@ the page says so. There is no `observe:pause` command for the same reason —
 a command runs in its own process, so it would pause its own recorder and
 report success while the web server carried on.
 
+## Shipping entries somewhere else
+
+A `Sink` is the write half of a `Store`, split out so somewhere to *send*
+entries does not have to be somewhere to *read them back from*:
+
+```
+OBSERVE_EXPORT_URL=https://collector.example.com/v1/entries
+OBSERVE_EXPORT_TOKEN=…
+```
+
+That wires `observe/export`'s HTTP transport — gzipped JSON envelope, bearer
+auth, the source attached once per batch. Or build it yourself:
+
+```go
+exporter := export.New(export.JSONL(file))
+observe.New(store, observe.WithSinks(exporter))
+```
+
+Sinks run **alongside** the store, never instead of it: a sink that fails
+must not cost the local dashboard its entries, and a store that fails must
+not stop them being shipped. A sink implementing `SinkCloser` is closed with
+the recorder, so an exporter flushes what it is holding on a graceful
+shutdown rather than taking it to the grave.
+
+### It is a goroutine, not an agent
+
+Laravel Nightwatch ships a separate agent process because PHP cannot do
+background work — a request ends and the process is gone, so something else
+has to own the buffer and the retries. That is a constraint of the runtime,
+not a property of the design, and Go does not have it.
+
+So this runs in the application: nothing extra to deploy, no socket to
+supervise, no version skew between an app and an agent. The cost is honest —
+an application killed hard loses whatever was still buffered — and `JSONL` is
+the escape hatch for anybody who would rather a sidecar tailed a file.
+
+### What a dead collector costs
+
+A bounded buffer, a rising counter, and nothing else. `Record` is an append
+under a mutex and returns immediately; the sending happens on the exporter's
+own goroutine.
+
+When the buffer fills, the **oldest** entries go, because a collector down
+for an hour should come back to the last minute of traffic rather than the
+first. After five consecutive failures the circuit opens and sending is
+suspended for a minute — backoff alone still retries every batch, and with a
+full buffer that is a lot of batches.
+
+A failed batch is **discarded rather than put back**. Requeuing would
+head-of-line block the buffer on a batch the destination cannot take, while
+newer entries were dropped to hold it. Those entries are counted, because
+entries that vanish with no number against them are the thing this package
+exists not to do.
+
+Four counters, meaning four different things: `Dropped` is the buffer
+overflowing, `Failed` is the network saying nothing, `Refused` is the
+destination saying no — a 4xx that is not 429, which retrying will never fix
+— and `Sent` is what got through.
+
+`observe/export` is the standard library only, so shipping your telemetry
+somewhere costs nothing in dependencies. A test pins that.
+
 ## The live tail
 
 The dashboard subscribes to the recorder over SSE instead of polling. Entries
