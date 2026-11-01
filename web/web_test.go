@@ -340,3 +340,75 @@ func TestTheTailIsClosedWithoutAuthentication(t *testing.T) {
 		t.Errorf("the tail answered %d with no auth configured, want 401", recorder.Code)
 	}
 }
+
+// TestTheDashboardScriptIsSyntacticallyValid.
+//
+// The UI is a Go string, so nothing parses it until a browser does — which is
+// after a release, in somebody else's tab, with no error anywhere a developer
+// is looking. A missing brace would render the page and then do nothing at
+// all, which reads as "observe is broken" rather than as a typo.
+//
+// Parsed here with the one parser available without a build step: the
+// document is wellformed enough that the script can be cut out by its tags,
+// and every brace, bracket and parenthesis has to balance. Crude, and it
+// catches the class of mistake that actually happens when a 250-line script
+// lives in a string literal.
+func TestTheDashboardScriptIsSyntacticallyValid(t *testing.T) {
+	server, _ := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the dashboard answered %d", recorder.Code)
+	}
+	page := recorder.Body.String()
+
+	open := strings.Index(page, "<script>")
+	close := strings.LastIndex(page, "</script>")
+	if open < 0 || close < open {
+		t.Fatal("the page has no script block")
+	}
+	script := page[open+len("<script>") : close]
+
+	// A Go raw string cannot contain a backtick, so a template literal is
+	// unavailable by construction — worth asserting, because the natural way
+	// to write this JavaScript is the way that cannot compile.
+	if strings.Contains(script, "`") {
+		t.Error("the script contains a backtick, which cannot appear in the " +
+			"raw string literal that holds it")
+	}
+
+	for _, pair := range []struct {
+		name        string
+		open, close rune
+	}{
+		{"braces", '{', '}'},
+		{"parentheses", '(', ')'},
+		{"brackets", '[', ']'},
+	} {
+		depth := 0
+		for _, char := range script {
+			switch char {
+			case pair.open:
+				depth++
+			case pair.close:
+				depth--
+			}
+		}
+		if depth != 0 {
+			t.Errorf("%s are unbalanced by %d", pair.name, depth)
+		}
+	}
+
+	// And the handlers the markup refers to by id exist in the script, since
+	// an element with no handler is a button that does nothing.
+	for _, id := range []string{"tail", "pause", "tags", "kind", "level", "q", "reload"} {
+		if !strings.Contains(page, `id="`+id+`"`) {
+			t.Errorf("the markup has no element with id %q", id)
+		}
+		if !strings.Contains(script, `getElementById('`+id+`')`) {
+			t.Errorf("nothing in the script reaches #%s, so the control does nothing", id)
+		}
+	}
+}
