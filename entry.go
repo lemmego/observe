@@ -33,6 +33,15 @@ const (
 	KindCache   Kind = "cache"
 	KindJob     Kind = "job"
 	KindMail    Kind = "mail"
+
+	// KindException is a panic, with the stack that produced it.
+	//
+	// Separate from the request it happened in, rather than a flag on it,
+	// because the two answer different questions. A request entry says this
+	// request failed; an exception entry says what failed and where, carries
+	// a stack that is far too large to hang off every request, and groups
+	// with the other times the same thing broke.
+	KindException Kind = "exception"
 )
 
 // Entry is one recorded thing.

@@ -62,6 +62,12 @@ func LoadProviders() []app.Provider {
         // anything whose queries you want recorded.
         &observeprovider.Provider{
             DashboardAuth: func(c app.Context) bool {
+                // auth.Check first, and this is not optional. The dashboard
+                // mounts with Router().Handle, on the bare ServeMux, so no
+                // route middleware has run — and auth.UserAs is a context
+                // read, not a lookup. Without this it answers false for
+                // everybody, however staff they are.
+                _ = auth.Check(c)
                 user, ok := auth.UserAs[*models.User](c)
                 return ok && user.IsStaff
             },
@@ -78,6 +84,58 @@ OBSERVE_ENABLED=true
 
 **It is off unless you say otherwise**, because the entries hold request
 headers, bound query parameters and every statement you ran.
+
+## The watchers
+
+Requests and queries come from the provider and the driver wrapper. The rest
+attach to something the application already has, and each is one line — but
+each is a line somebody has to write, so a watcher you do not wire records
+nothing and says nothing about it. `observe:last` prints which are active.
+
+| Watcher | Wire it | Needs |
+|---|---|---|
+| `http` | automatic, from the provider | |
+| `sqldriver` | `observe.Wrap(driver)`, below | |
+| `exception` | `observehttp.Recover()` **in place of** your recoverer | |
+| `slog` | `observeslog.Handler()` in `log.Options.Extra` | |
+| `cache` | `observecache.Watch(cache, observe.Default())` | the cache |
+| `job` | `observejob.Watch(observe.Default())` | |
+| `mail` | `Transport: observemail.Watch(transport, observe.Default())` | the transport |
+
+`observe.Default()` is nil until the provider has run, and `LoadProviders`
+builds its whole slice before any provider runs — so a watcher constructed
+inside that slice gets nil and silently records nothing. Attach them from a
+provider of your own, registered after the things they watch.
+
+### Exceptions
+
+`observehttp.Recover()` **replaces** the recovering middleware you already
+have rather than joining it. Two recoverers is not twice the safety: the
+outer one wins and the inner one never fires.
+
+```go
+// bootstrap/http_middleware.go
+func LoadHTTPMiddlewares() []app.HTTPMiddleware {
+    return []app.HTTPMiddleware{
+        observehttp.Recover(), // was middleware.Recoverer()
+        middleware.RequestLogger(),
+    }
+}
+```
+
+What you get back is the stack. `api/middleware.Recoverer` delegates to chi's,
+which prints the stack to stderr through its own pretty-printer — not through
+slog, so no log watcher sees it, and not into any store, so by the time
+somebody asks what happened the only copy has scrolled. observe could see the
+*shape* of the failure, a request entry at 500, and nothing about its cause.
+
+It answers 500 the same way chi's does, re-panics `http.ErrAbortHandler`
+rather than reporting a cancelled response as a crash, and still logs at
+error level — the store is for looking things up afterwards, not a reason to
+go quiet during development.
+
+The exception entry carries the request id, so it groups under the request
+that caused it.
 
 ## Record your queries
 

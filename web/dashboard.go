@@ -37,6 +37,7 @@ tr.row:hover td{background:#1e293b}
 .kind.cache{background:#4c1d95;color:#ddd6fe}
 .kind.job{background:#78350f;color:#fde68a}
 .kind.mail{background:#164e63;color:#a5f3fc}
+.kind.exception{background:#7f1d1d;color:#fecaca}
 .sum{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-word}
 .dur{color:#94a3b8;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .bad .sum{color:#fca5a5}
@@ -56,6 +57,7 @@ tr.row:hover td{background:#1e293b}
 <div class="bar">
   <select id="kind">
     <option value="">every kind</option>
+    <option value="exception">exceptions</option>
     <option value="request">requests</option>
     <option value="query">queries</option>
     <option value="log">logs</option>
