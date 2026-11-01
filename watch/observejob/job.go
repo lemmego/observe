@@ -139,7 +139,14 @@ func watchExecution(recorder *observe.Recorder) {
 		// earlier, which reads as one impossibly long request; the link is a
 		// field on the entry instead.
 		if observe.RequestIDFrom(ctx) == "" {
-			ctx = observe.WithRequestID(ctx, observe.NewID())
+			id := observe.NewID()
+			ctx = observe.WithRequestID(ctx, id)
+			// Decided here for the same reason the HTTP middleware decides
+			// there: this is where the id exists, and a sampled-out job
+			// should skip building the entries for everything it does rather
+			// than build and discard them. A worker is the process where
+			// that matters most — it has no think time between statements.
+			ctx = observe.WithSampling(ctx, recorder.ShouldSampleRequest(id))
 		}
 
 		// The Go type, which is what tasker's own middleware uses: Job is

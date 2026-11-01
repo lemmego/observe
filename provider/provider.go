@@ -54,13 +54,19 @@ type Provider struct {
 	// RoutePrefix is where the dashboard mounts. Empty means /observe.
 	RoutePrefix string
 
-	// Sampler decides which entries are kept.
+	// Sampler decides which requests are kept, from the correlation id
+	// alone.
+	//
+	// An id rather than an Entry, because the decision is made before an
+	// Entry exists — that is what makes sampling cheap rather than merely
+	// correct. For a finer filter over built entries, pass
+	// observe.WithSampler through Options.
 	//
 	// Nil defers to OBSERVE_SAMPLE, a rate between 0 and 1 read as a
-	// fraction of *requests* kept whole — see observe.SampleRequests. An
+	// fraction of requests kept whole — see observe.SampleRequests. An
 	// absent or unparsable variable keeps everything, which is right in
 	// development and wants reconsidering in production.
-	Sampler func(observe.Entry) bool
+	Sampler func(requestID string) bool
 
 	// Retention is how long entries are kept by the prune command. Zero means
 	// seven days.
@@ -108,7 +114,7 @@ func (p *Provider) Provide(a app.App) error {
 
 	options := p.Options
 	if sampler := p.sampler(); sampler != nil {
-		options = append(options, observe.WithSampler(sampler))
+		options = append(options, observe.WithRequestSampler(sampler))
 	}
 
 	recorder := observe.New(store, options...)
@@ -152,7 +158,7 @@ func (p *Provider) Provide(a app.App) error {
 // `OBSERVE_SAMPLE=` would otherwise mean something different from an absent
 // one, and `OBSERVE_SAMPLE=half` would take the process down rather than
 // record everything and complain.
-func (p *Provider) sampler() func(observe.Entry) bool {
+func (p *Provider) sampler() func(requestID string) bool {
 	if p.Sampler != nil {
 		return p.Sampler
 	}

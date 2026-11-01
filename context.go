@@ -15,6 +15,7 @@ type contextKey int
 const (
 	requestIDKey contextKey = iota
 	internalKey
+	samplingKey
 )
 
 // WithRequestID returns a context carrying a request identifier, so everything
@@ -65,4 +66,36 @@ func Recording(ctx context.Context) bool {
 	}
 	off, _ := ctx.Value(internalKey).(bool)
 	return !off
+}
+
+// WithSampling records whether work under this context is being kept.
+//
+// The decision is made once, where the correlation id is minted — the HTTP
+// middleware, the job watcher, the schedule watcher — and read many times,
+// by every watcher that is about to build an entry. That ordering is the
+// entire point of this phase: the sampler used to run inside Record, which
+// is after the caller had already redacted every bound parameter, collapsed
+// the statement and marshalled the payload. A statement about to be
+// discarded paid full price first.
+//
+// Per request rather than per entry, for the reason SampleRequests exists:
+// ten percent of the queries of every request is ten percent of a story
+// about all of them, where every query of a tenth of requests is the whole
+// story about some.
+func WithSampling(ctx context.Context, keep bool) context.Context {
+	return context.WithValue(ctx, samplingKey, keep)
+}
+
+// sampledIn reports whether this context was kept.
+//
+// Absent means kept. An entry recorded outside any request — a background
+// goroutine, a CLI command, an application calling Record directly — has had
+// no decision made about it, and the honest reading of "nobody sampled this"
+// is not "it was sampled out".
+func sampledIn(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	keep, decided := ctx.Value(samplingKey).(bool)
+	return !decided || keep
 }

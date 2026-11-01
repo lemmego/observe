@@ -77,6 +77,11 @@ func Watch(registry *authz.Registry, recorder *observe.Recorder) {
 	}
 
 	registry.Observe(func(ctx context.Context, o authz.Observation) {
+		// Unconditional: a refusal is recorded at warn rather than error, so
+		// no gate decision here can lose one.
+		if !recorder.ShouldRecord(ctx) {
+			return
+		}
 		payload := gatePayload{
 			Ability: o.Ability,
 			Allowed: o.Decision.Allowed,

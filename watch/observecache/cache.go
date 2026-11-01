@@ -51,6 +51,12 @@ func Watch(c *cache.Cache, recorder *observe.Recorder) {
 		// the last one was.
 		summarise := describe
 		c.Listen(name, func(ctx context.Context, event cache.Event) {
+			// Unconditional: a cache event never fails, so there is nothing
+			// the gate could cost. This is the highest-volume watcher after
+			// queries, so it is also where it pays most.
+			if !recorder.ShouldRecord(ctx) {
+				return
+			}
 			summary, payload := summarise(event)
 			entry := observe.Entry{
 				Kind:    observe.KindCache,

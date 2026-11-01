@@ -47,7 +47,13 @@ func Default() *Recorder { return defaultRecorder.Load() }
 // tell where it came from. Arguments are redacted before they are stored.
 func RecordQuery(ctx context.Context, watcher, statement string, args []any, took time.Duration, err error) {
 	rec := Default()
-	if rec == nil || !Recording(ctx) {
+	// Asked before anything is rendered or marshalled. Redacting every bound
+	// parameter for a statement that is about to be sampled away was the
+	// expensive half of this path.
+	//
+	// Only for a statement that worked: a failed one is kept whatever the
+	// rate, so asking would lose it.
+	if err == nil && !rec.ShouldRecord(ctx) {
 		return
 	}
 	if watcher == "" {

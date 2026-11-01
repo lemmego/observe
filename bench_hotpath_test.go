@@ -46,11 +46,15 @@ func BenchmarkQueryWithNoRecorder(b *testing.B) {
 
 // What it costs when a sampler is going to throw the entry away anyway.
 func BenchmarkQuerySampledOut(b *testing.B) {
-	rec := observe.New(memory.New(), observe.WithSampler(func(observe.Entry) bool { return false }))
+	rec := observe.New(memory.New(),
+		observe.WithRequestSampler(func(string) bool { return false }))
 	observe.SetDefault(rec)
 	b.Cleanup(func() { observe.SetDefault(nil); _ = rec.Close(context.Background()) })
 
-	ctx := observe.WithRequestID(context.Background(), observe.NewID())
+	// The decision cached on the context, as the HTTP middleware caches it.
+	id := observe.NewID()
+	ctx := observe.WithSampling(
+		observe.WithRequestID(context.Background(), id), rec.ShouldSampleRequest(id))
 	b.ReportAllocs()
 	for b.Loop() {
 		observe.RecordQuery(ctx, "sqldriver", stmt, args(), 3*time.Millisecond, nil)

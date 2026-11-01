@@ -227,3 +227,77 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// TestTheMiddlewareDecidesSamplingOnceForTheWholeRequest.
+//
+// The decision is cached on the context where the id is minted, which is the
+// whole of this phase: a sampled-out request skips building its entries
+// rather than building and discarding them. Asserted through the handler,
+// because a decision made and not threaded into the request is a decision
+// nothing downstream can read.
+func TestTheMiddlewareDecidesSamplingOnceForTheWholeRequest(t *testing.T) {
+	store := memory.New()
+	recorder := observe.New(store,
+		observe.WithRequestSampler(func(string) bool { return false }))
+	t.Cleanup(func() { _ = recorder.Close(context.Background()) })
+
+	var askedInHandler bool
+	handler := provider.Middleware(recorder)(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			askedInHandler = recorder.ShouldRecord(r.Context())
+			// What a watcher would do, and must not land.
+			recorder.Record(r.Context(), observe.Entry{
+				Kind: observe.KindQuery, Summary: "SELECT 1",
+			})
+			w.WriteHeader(http.StatusOK)
+		}))
+
+	handler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/feed", nil))
+
+	if askedInHandler {
+		t.Error("the handler was told to record on a sampled-out request; the " +
+			"decision did not reach the request context")
+	}
+
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.Entries(context.Background(), observe.Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 {
+		t.Errorf("recorded %d entries for a sampled-out request: %v", len(found), found)
+	}
+}
+
+// But a sampled-out request that fails still leaves its request entry, which
+// is what an error rate is counted from.
+func TestASampledOutRequestThatFailsIsStillRecorded(t *testing.T) {
+	store := memory.New()
+	recorder := observe.New(store,
+		observe.WithRequestSampler(func(string) bool { return false }))
+	t.Cleanup(func() { _ = recorder.Close(context.Background()) })
+
+	handler := provider.Middleware(recorder)(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+
+	handler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/feed", nil))
+
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.Entries(context.Background(), observe.Query{
+		Kinds: []observe.Kind{observe.KindRequest},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("recorded %d request entries for a failing sampled-out request, want 1", len(found))
+	}
+}

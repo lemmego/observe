@@ -67,6 +67,9 @@ func Watch(a app.App, recorder *observe.Recorder, events ...string) {
 	for _, event := range events {
 		name := event
 		a.On(name, func(ctx context.Context, payload any) error {
+			if !recorder.ShouldRecord(ctx) {
+				return nil
+			}
 			entry := observe.Entry{
 				Kind:    observe.KindEvent,
 				Level:   slog.LevelInfo,

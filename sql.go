@@ -63,9 +63,6 @@ func WrapConnector(c driver.Connector) driver.Connector {
 // recordStatement is the one place a statement becomes an entry.
 func recordStatement(ctx context.Context, query string, args []driver.NamedValue, started time.Time, err error, result driver.Result) {
 	rec := Default()
-	if rec == nil || !Recording(ctx) {
-		return
-	}
 
 	// driver.ErrSkip is not a failure. It is how a driver says "I do not
 	// implement this fast path, use the general one", after which database/sql
@@ -73,6 +70,16 @@ func recordStatement(ctx context.Context, query string, args []driver.NamedValue
 	// it as an error would report a failed query for every statement a driver
 	// declines to special-case.
 	if errors.Is(err, driver.ErrSkip) {
+		return
+	}
+
+	// The gate, before anything is built. Rendering and redacting every
+	// bound parameter and marshalling the payload is what a sampled-out
+	// statement used to pay for and then throw away.
+	//
+	// Only for a statement that worked: a failed one is kept whatever the
+	// rate, so asking would lose it.
+	if err == nil && !rec.ShouldRecord(ctx) {
 		return
 	}
 

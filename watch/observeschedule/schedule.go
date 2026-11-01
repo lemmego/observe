@@ -50,7 +50,9 @@ func Watch(sched *scheduler.Scheduler, recorder *observe.Recorder) {
 		// one: a scheduled firing is its own unit of work, and anything it
 		// causes should group under it rather than under nothing.
 		if observe.RequestIDFrom(ctx) == "" {
-			ctx = observe.WithRequestID(ctx, observe.NewID())
+			id := observe.NewID()
+			ctx = observe.WithRequestID(ctx, id)
+			ctx = observe.WithSampling(ctx, recorder.ShouldSampleRequest(id))
 		}
 
 		entry := observe.Entry{

@@ -19,9 +19,9 @@ func TestSamplingKeepsWholeRequests(t *testing.T) {
 	keep := observe.SampleRequests(0.5)
 
 	for _, id := range []string{"req-a", "req-b", "req-c", "req-d", "req-e"} {
-		first := keep(observe.Entry{RequestID: id, Kind: observe.KindRequest})
+		first := keep(id)
 		for i := 0; i < 50; i++ {
-			if keep(observe.Entry{RequestID: id, Kind: observe.KindQuery}) != first {
+			if keep(id) != first {
 				t.Fatalf("%s was sampled inconsistently; its entries would be "+
 					"split across the boundary and the request would read as "+
 					"half a story", id)
@@ -36,7 +36,7 @@ func TestSamplingKeepsRoughlyTheRate(t *testing.T) {
 	kept := 0
 	const requests = 4000
 	for i := 0; i < requests; i++ {
-		if keep(observe.Entry{RequestID: observe.NewID()}) {
+		if keep(observe.NewID()) {
 			kept++
 		}
 	}
@@ -57,7 +57,7 @@ func TestTheRateBoundsAreHonoured(t *testing.T) {
 	if observe.SampleRequests(1.5) != nil {
 		t.Error("a rate above 1 returns a sampler")
 	}
-	if keep := observe.SampleRequests(0); keep(observe.Entry{RequestID: "x"}) {
+	if keep := observe.SampleRequests(0); keep("x") {
 		t.Error("a rate of 0 kept an entry")
 	}
 }
@@ -66,8 +66,8 @@ func TestTheRateBoundsAreHonoured(t *testing.T) {
 // rate would thin a population rather than select from it.
 func TestAnUncorrelatedEntryIsKept(t *testing.T) {
 	keep := observe.SampleRequests(0.0001)
-	if !keep(observe.Entry{Kind: observe.KindQuery, Summary: "SELECT 1"}) {
-		t.Error("an entry with no request id was sampled away")
+	if !keep("") {
+		t.Error("work with no request id was sampled away")
 	}
 }
 

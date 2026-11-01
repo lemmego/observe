@@ -423,6 +423,46 @@ the whole story about some, and the whole story is the one you can debug. The
 decision is a hash of the request id, so every entry of one request agrees —
 including entries recorded minutes later by a worker that inherited the id.
 
+**The decision is made once, where the correlation id is minted**, and cached
+on the context. That is what makes sampling cheap rather than merely correct:
+a watcher asks `observe.ShouldRecord(ctx)` before it builds anything, so a
+sampled-out statement never has its parameters redacted or its payload
+marshalled.
+
+```
+BenchmarkQueryWithNoRecorder    8.3 ns/op      0 B/op   0 allocs/op
+BenchmarkQuerySampledOut       17.0 ns/op      0 B/op   0 allocs/op
+BenchmarkQueryRecorded         3545 ns/op   1473 B/op  14 allocs/op
+```
+
+Before the gate existed the middle row was 2,781ns and twelve allocations:
+the sampler ran inside `Record`, which is *after* the caller had built the
+entry, so a statement about to be discarded paid full price first. At a one
+percent rate that saved about a third of the work rather than ninety-nine
+percent of it. `bench_hotpath_test.go` is what keeps it honest.
+
+### What sampling never drops
+
+Anything that **failed**, plus exceptions and dumps. A sampled-out request
+that broke is the request you most need, and an error view showing a tenth of
+the errors is worse than none — it reads as a number rather than as a sample.
+A dump was asked for by name, in code somebody wrote.
+
+The cost is worth knowing: a badly broken application samples itself less,
+because more of its entries qualify. The queue's drop counter is what bounds
+that, and it is reported.
+
+The other limitation is real too. At a low rate a failed request gives you the
+request entry and the exception, not the queries that led there — those were
+never built. Raise the rate when you need them.
+
+### Two samplers
+
+`WithRequestSampler` is the coarse gate, over a correlation id, consulted
+before anything is built. `WithSampler` is a finer filter over a built entry,
+applied within a kept request — "keep a tenth of requests, and within those
+drop cache hits". They compose.
+
 Sampled-out entries are counted separately from dropped ones and shown in the
 dashboard. Without that number, a list one tenth as long as expected looks
 like a broken watcher rather than like the configuration working.
@@ -533,6 +573,10 @@ behind is closed and says so.
 
 **Pausing is per-process.** There is no `observe:pause` command, and the
 reason is in **Sampling, and turning it down**.
+
+**Sampling is decided per correlation id**, so work with no id — a background
+goroutine, a command — is always kept. "Nobody sampled this" does not read as
+"this was sampled out".
 
 **Nothing prunes itself.** Run `lemmego run observe:prune` on a schedule.
 

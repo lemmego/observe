@@ -39,6 +39,14 @@ func Middleware(recorder *observe.Recorder) app.HTTPMiddleware {
 
 			requestID := observe.NewID()
 			ctx := observe.WithRequestID(r.Context(), requestID)
+
+			// The sampling decision, made once here and read by every watcher
+			// that fires under this request. Here because this is where the
+			// id exists for the first time, and the id is all the decision
+			// needs — which is what lets a sampled-out request skip building
+			// its entries rather than building and discarding them.
+			ctx = observe.WithSampling(ctx, recorder.ShouldSampleRequest(requestID))
+
 			r = r.WithContext(ctx)
 
 			// Handed to the client so a person reporting a problem can quote

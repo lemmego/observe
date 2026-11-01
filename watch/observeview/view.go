@@ -47,6 +47,9 @@ func Watch(recorder *observe.Recorder) {
 	}
 
 	app.ObserveRenders(func(ctx context.Context, rendered app.Rendered) {
+		if rendered.Err == nil && !recorder.ShouldRecord(ctx) {
+			return
+		}
 		entry := observe.Entry{
 			Kind:     observe.KindView,
 			Duration: rendered.Duration,

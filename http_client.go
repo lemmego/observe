@@ -76,6 +76,15 @@ func (t *observedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	res, err := t.base.RoundTrip(r)
 	took := time.Since(started)
 
+	// Gated after the call rather than before it, because the outcome is
+	// what decides whether sampling applies — and because a network round
+	// trip dwarfs the cost of building this entry, so there is nothing to
+	// save by deciding earlier.
+	failed := err != nil || (res != nil && res.StatusCode >= 500)
+	if !failed && !recorder.ShouldRecord(r.Context()) {
+		return res, err
+	}
+
 	payload := outboundPayload{
 		Method: r.Method,
 		URL:    redactedURL(r.URL),

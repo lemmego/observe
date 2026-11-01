@@ -108,9 +108,10 @@ type Recorder struct {
 	// loop that never ends.
 	storing atomic.Bool
 
-	batchSize     int
-	flushInterval time.Duration
-	sampler       func(Entry) bool
+	batchSize      int
+	flushInterval  time.Duration
+	sampler        func(Entry) bool
+	requestSampler func(requestID string) bool
 
 	// watchers names what is installed, so a reader can tell "nothing
 	// happened" from "nothing was watching".
@@ -164,6 +165,27 @@ func WithSampler(keep func(Entry) bool) Option {
 	return func(r *Recorder) { r.sampler = keep }
 }
 
+// WithRequestSampler installs the coarse gate: whether a whole request is
+// kept, decided from its correlation id alone.
+//
+// This is the one that makes sampling affordable, and the reason it takes an
+// id rather than an Entry is the whole of it. A predicate over an Entry can
+// only run once an Entry exists, which is after the caller has redacted every
+// bound parameter, collapsed the statement and marshalled the payload — so a
+// statement about to be discarded paid full price first. An id is available
+// before any of that.
+//
+// The decision is made once, where the id is minted, and cached on the
+// context; see [WithSampling] and [ShouldRecord]. [observe.SampleRequests]
+// is the usual argument.
+//
+// It composes with [WithSampler] rather than replacing it: this one is coarse
+// and per request, that one is fine and per entry, and "keep a tenth of
+// requests, and within those drop cache hits" is a reasonable thing to want.
+func WithRequestSampler(keep func(requestID string) bool) Option {
+	return func(r *Recorder) { r.requestSampler = keep }
+}
+
 // New returns a Recorder writing to a store, and starts its writer.
 //
 // Close it, or the writer goroutine outlives the application.
@@ -194,6 +216,18 @@ func New(store Store, opts ...Option) *Recorder {
 // recorder is busy".
 func (r *Recorder) Record(ctx context.Context, e Entry) {
 	if r == nil || r.paused.Load() || !Recording(ctx) {
+		return
+	}
+
+	// The gate, enforced here as well as offered through ShouldRecord.
+	//
+	// ShouldRecord is an optimisation a watcher calls to avoid building an
+	// entry it is about to lose; this is what makes the decision binding. A
+	// watcher that forgets to ask costs performance, not correctness — which
+	// is the right way round, because the alternative is a sampling rate that
+	// silently means nothing as soon as one call site is added without it.
+	if !sampledIn(ctx) && !bypassesSampling(e) {
+		r.sampled.Add(1)
 		return
 	}
 
@@ -271,6 +305,89 @@ func (r *Recorder) Resume() {
 // Paused reports whether this process is recording.
 func (r *Recorder) Paused() bool {
 	return r != nil && r.paused.Load()
+}
+
+// ShouldRecord reports whether a watcher should build an entry at all.
+//
+// Call it first, before marshalling a payload or rendering an argument:
+//
+//	if !recorder.ShouldRecord(ctx) {
+//	    return
+//	}
+//
+// It folds together the two reasons not to bother — the recursion guard, and
+// a request this recorder sampled out — so a watcher has one question to ask
+// rather than two to remember.
+//
+// # Ask it only about work that succeeded
+//
+// Anything that failed is recorded whatever the sampling says, and Record
+// enforces that — see bypassesSampling. So a caller that already knows the
+// outcome asks only when there is nothing to keep:
+//
+//	if err == nil && !rec.ShouldRecord(ctx) {
+//	    return
+//	}
+//
+// A caller that asks anyway loses failures it would otherwise have kept. A
+// caller that never asks is correct and slower, which is the right way round
+// for an optimisation.
+func (r *Recorder) ShouldRecord(ctx context.Context) bool {
+	if r == nil || r.paused.Load() {
+		return false
+	}
+	if !Recording(ctx) {
+		// The recursion guard, not a sampling decision: not counted, because
+		// a store writing its own entries is not telemetry anybody asked for
+		// and reporting it as sampled-out would be noise in a number people
+		// read to size their sampling rate.
+		return false
+	}
+	if !sampledIn(ctx) {
+		r.sampled.Add(1)
+		return false
+	}
+	return true
+}
+
+// ShouldSampleRequest decides whether a whole correlation id is kept.
+//
+// Called once where the id is minted. With no request sampler installed
+// everything is kept, which is the right default for development and the
+// thing OBSERVE_SAMPLE exists to change.
+func (r *Recorder) ShouldSampleRequest(id string) bool {
+	if r == nil {
+		return false
+	}
+	if r.requestSampler == nil {
+		return true
+	}
+	return r.requestSampler(id)
+}
+
+// bypassesSampling reports whether an entry is kept whatever the rate.
+//
+// Anything that failed, plus exceptions and dumps. The policy lives here
+// rather than at each call site so a watcher added later inherits it instead
+// of having to remember it — which is the failure mode this package exists to
+// point at.
+//
+//   - Anything that failed. A sampled-out request that broke is the request
+//     you most need, and a telemetry tool that drops nine failures in ten is
+//     not one. Every monitoring product keeps errors unconditionally, and an
+//     error view showing a tenth of the errors is worse than no error view,
+//     because it reads as a number rather than as a sample.
+//   - An exception, which is the panic case of the above and also stands
+//     alone: it carries its own stack.
+//   - A dump. Somebody asked for it by name, in code they wrote, and losing
+//     it to a dice roll would make the feature untrustworthy.
+//
+// The cost is that a badly broken application samples itself less, because
+// more of its entries qualify. That is the right way round — the queue's
+// drop counter is what bounds it, and it is reported — but it is worth
+// knowing before reading a rate as a guarantee about volume.
+func bypassesSampling(e Entry) bool {
+	return e.Failed() || e.Kind == KindException || e.Kind == KindDump
 }
 
 // Watching registers that a watcher is installed, so a reader can tell an
