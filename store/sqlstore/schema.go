@@ -61,7 +61,8 @@ func SchemaStatements(dialect Dialect, table string) []string {
 	data %s,
 	error %s NOT NULL,
 	watcher VARCHAR(64) NOT NULL DEFAULT '',
-	tags VARCHAR(1024) NOT NULL DEFAULT ''
+	tags VARCHAR(1024) NOT NULL DEFAULT '',
+	source VARCHAR(128) NOT NULL DEFAULT ''
 )`, table, timestamp, text, text, text)
 
 	return []string{

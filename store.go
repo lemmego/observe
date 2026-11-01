@@ -59,6 +59,14 @@ type Query struct {
 	// Contains matches the summary and the payload.
 	Contains string
 
+	// Source restricts to entries whose source contains this text.
+	//
+	// A substring rather than an exact match, so "everything this instance
+	// did" and "everything this host did" are the same filter at different
+	// precisions — service/host/instance is rendered longest-lived first
+	// precisely so a prefix means something.
+	Source string
+
 	// Tags restricts to entries carrying **every** one of these tags.
 	//
 	// Every rather than any, because tags narrow: a reader asking for

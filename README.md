@@ -41,12 +41,13 @@ lemmego run migrate up
 Step 2 is the easy one to miss: the migration was written by a running binary
 that does not contain it yet.
 
-Two files are published, not one: the table, and an `ALTER` adding the `tags`
-column. A second migration rather than an edit to the first, because the
-first has already run everywhere it was going to — so editing it would change
-nothing for an existing project and leave its table a column short of what
-the store writes. **Upgrading from v0.4.0 or earlier means republishing and
-migrating again.**
+Three files are published, not one: the table, and an `ALTER` for each column
+added since — `tags` and `source`. A new migration rather than an edit to the
+first, because the first has already run everywhere it was going to, so
+editing it would change nothing for an existing project and leave its table a
+column short of what the store writes. **Upgrading from any earlier version
+means republishing and migrating again**; a republish only writes the files
+that are missing.
 
 ## Register it
 
@@ -518,6 +519,41 @@ deployment switch: with several web processes the others keep recording, and
 the page says so. There is no `observe:pause` command for the same reason —
 a command runs in its own process, so it would pause its own recorder and
 report success while the web server carried on.
+
+## Which process recorded this
+
+A shared store across several web processes is the normal deployment, and
+without an identity two instances' entries are indistinguishable — so "which
+host is slow", "did the new release do this" and "is it only the workers"
+have no answer.
+
+```go
+&observe.Provider{Source: observe.Source{Release: commit}}
+```
+
+`Service` defaults to `APP_NAME`, `Environment` to the profile, `Release` to
+`OBSERVE_RELEASE`, and `Host` and `Instance` fill themselves in. **`Release`
+is the one worth setting in a deployment**, because it is what makes "did the
+new build do this" answerable — and nothing here guesses it, since an entry
+labelled with the wrong release sends somebody to the wrong commit.
+
+`Instance` is minted per run, so a restart is visible rather than looking like
+continuous history.
+
+It rides in two places. Each entry carries a compact `service/host/instance`
+in its own column, because the local dashboard reads rows and has no envelope
+to consult. The full structured value goes in the export envelope, once per
+batch, where that is the unit.
+
+Filter on it in the dashboard, the list, the tail or the API with
+`?source=`. It is a substring match and the rendering puts the longest-lived
+part first on purpose, so `shop/` selects a service, `shop/web-7f3` selects a
+host, and the whole thing selects one run.
+
+**Upgrading needs the migration again** — `source` is a third published file,
+for the same reason `tags` was a second: `MigrationVersion` is fixed so a
+republish is a no-op, and editing a stub that has already run changes nothing
+for an existing project.
 
 ## Shipping entries somewhere else
 

@@ -136,6 +136,18 @@ type Entry struct {
 	// rather than as "nothing is watching them".
 	Watcher string `json:"watcher"`
 
+	// Source says which process recorded this, rendered compactly as
+	// service/host/instance.
+	//
+	// Stamped by the recorder from its configured [Source], so no watcher
+	// has to know about it. Empty when nothing was configured, which is the
+	// ordinary case for a single-process development machine where the
+	// answer would be the same on every row.
+	//
+	// The full structured source travels in the export envelope instead,
+	// where it costs once per batch rather than once per entry.
+	Source string `json:"source,omitempty"`
+
 	// Tags label this entry for retrieval that a request id cannot serve.
 	//
 	// RequestID groups what one request did. A tag groups across requests —

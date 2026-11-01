@@ -53,6 +53,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"a tag filter does not match a longer tag", aTagFilterDoesNotMatchALongerTag},
 		{"counts are grouped by kind", countsAreGroupedByKind},
 		{"counts honour a since", countsHonourASince},
+		{"a source round-trips and filters", aSourceRoundTripsAndFilters},
 	}
 
 	for _, tc := range cases {
@@ -532,5 +533,45 @@ func countsHonourASince(t *testing.T, store observe.Store) {
 	}
 	if counts[observe.KindQuery] != 1 {
 		t.Errorf("queries in the last hour = %d, want 1", counts[observe.KindQuery])
+	}
+}
+
+// A shared store across several web processes is the normal deployment, so
+// "which instance served this" has to survive the round trip and be
+// selectable — otherwise the column is decoration.
+func aSourceRoundTripsAndFilters(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	record(t, store, []observe.Entry{
+		{ID: "a", Kind: observe.KindRequest, Summary: "GET /", Source: "shop/web-7f3/ab12"},
+		{ID: "b", Kind: observe.KindRequest, Summary: "GET /", Source: "shop/web-9c1/cd34"},
+		{ID: "c", Kind: observe.KindJob, Summary: "prune", Source: "shop/worker-1/ef56"},
+		{ID: "d", Kind: observe.KindQuery, Summary: "SELECT 1"},
+	})
+
+	got, err := store.Entry(ctx, "a")
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if got.Source != "shop/web-7f3/ab12" {
+		t.Errorf("Source = %q, want it back", got.Source)
+	}
+
+	// One instance.
+	found, err := store.Entries(ctx, observe.Query{Source: "web-7f3"})
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "a" {
+		t.Errorf("got %v, want only the entry from web-7f3", ids(found))
+	}
+
+	// A prefix means something, because the rendering puts the
+	// longest-lived part first.
+	found, err = store.Entries(ctx, observe.Query{Source: "shop/"})
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(found) != 3 {
+		t.Errorf("got %v, want every entry from the service", ids(found))
 	}
 }

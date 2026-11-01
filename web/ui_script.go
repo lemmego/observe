@@ -43,7 +43,7 @@ var PANELS = [
   {kind:'',             title:'Everything',    group:'Other'}
 ];
 
-var state = {panel:'request', q:'', level:'', tags:[], cursor:null, rows:[], view:null, tailing:true};
+var state = {panel:'request', q:'', level:'', tags:[], source:'', cursor:null, rows:[], view:null, tailing:true};
 var source = null;
 
 /* ---- helpers --------------------------------------------------------- */
@@ -312,6 +312,7 @@ function params(extra){
   if (state.level) p.push('level='+encodeURIComponent(state.level));
   if (state.q) p.push('q='+encodeURIComponent(state.q));
   if (state.tags.length) p.push('tags='+encodeURIComponent(state.tags.join(',')));
+  if (state.source) p.push('source='+encodeURIComponent(state.source));
   if (extra) p.push(extra);
   return p.length ? '?'+p.join('&') : '';
 }
@@ -439,6 +440,7 @@ function openEntry(id){
         fact('kind', '<span class="pill">'+esc(e.kind)+'</span>')+
         fact('level', '<span class="lvl '+l[1]+'">'+l[0]+'</span>')+
         fact('watcher', esc(e.watcher))+
+        fact('source', e.source ? '<span class="mono">'+esc(e.source)+'</span>' : '')+
         fact('took', e.duration ? ms(e.duration) : '')+
         fact('when', esc(ago(e.at))+' <span class="faint">('+esc(e.at)+')</span>')+
         (e.request_id ? fact('request',
@@ -483,6 +485,7 @@ function openRequest(id){
           fact('when', esc(ago(req.at))+' <span class="faint">('+esc(req.at)+')</span>')+
           fact('ip', esc(d.ip || ''))+
           fact('bytes', d.bytes ? String(d.bytes) : '')+
+          fact('source', req.source ? '<span class="mono">'+esc(req.source)+'</span>' : '')+
           fact('entries', String(entries.length - 1))+
         '</div>'+(req.tags && req.tags.length ? '<div style="margin-top:12px">'+tagsOf(req, '')+'</div>' : '')+
         '</div>';
@@ -632,6 +635,9 @@ function paintTail(){
 el('reload').onclick = function(){ refresh(); };
 el('level').onchange = function(){ state.level = this.value; refresh(); };
 el('q').onkeydown = function(ev){ if (ev.key === 'Enter') { state.q = this.value; refresh(); } };
+el('source').onkeydown = function(ev){
+  if (ev.key === 'Enter') { state.source = this.value.trim(); refresh(); }
+};
 el('tags').onkeydown = function(ev){
   if (ev.key !== 'Enter') return;
   state.tags = this.value.split(',').map(function(t){ return t.trim(); })

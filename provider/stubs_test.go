@@ -49,6 +49,10 @@ func TestThePublishedMigrationMatchesTheSchema(t *testing.T) {
 		t.Error("nothing published adds the tags column, which the store " +
 			"writes on every entry")
 	}
+	if !strings.Contains(provider.SourceMigrationStub, "ADD COLUMN source") {
+		t.Error("nothing published adds the source column, which the store " +
+			"writes on every entry")
+	}
 	if strings.Contains(provider.MigrationStub, `"tags"`) {
 		t.Error("the create migration now makes tags as well, so publishing " +
 			"both would ALTER a column that already exists")
@@ -134,6 +138,7 @@ func TestBothPublishedMigrationsAreValidGo(t *testing.T) {
 	for name, stub := range map[string]string{
 		"create": provider.MigrationStub,
 		"tags":   provider.TagsMigrationStub,
+		"source": provider.SourceMigrationStub,
 	} {
 		if _, err := parser.ParseFile(token.NewFileSet(), name+".go", stub,
 			parser.AllErrors); err != nil {
@@ -155,6 +160,13 @@ func TestTheTagsMigrationIsOrderedAfterTheCreate(t *testing.T) {
 	if !strings.Contains(provider.TagsMigrationStub, provider.TagsMigrationVersion) {
 		t.Error("the tags stub registers a version other than TagsMigrationVersion")
 	}
+	if provider.SourceMigrationVersion <= provider.TagsMigrationVersion {
+		t.Errorf("SourceMigrationVersion %s does not sort after %s",
+			provider.SourceMigrationVersion, provider.TagsMigrationVersion)
+	}
+	if !strings.Contains(provider.SourceMigrationStub, provider.SourceMigrationVersion) {
+		t.Error("the source stub registers a version other than SourceMigrationVersion")
+	}
 }
 
 // TestEveryPublishableIsNamespacedAndDistinct.
@@ -175,7 +187,8 @@ func TestEveryPublishableIsNamespacedAndDistinct(t *testing.T) {
 		}
 		seen[publishable.FilePath] = true
 	}
-	if len(seen) != 2 {
-		t.Errorf("published %d files, want the create and the tags migration", len(seen))
+	if len(seen) != 3 {
+		t.Errorf("published %d files, want the create, tags and source migrations",
+			len(seen))
 	}
 }

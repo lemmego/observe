@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lemmego/observe"
@@ -175,6 +176,10 @@ func matchesTail(entry observe.Entry, q observe.Query) bool {
 		return false
 	}
 	if q.RequestID != "" && entry.RequestID != q.RequestID {
+		return false
+	}
+	if q.Source != "" && !strings.Contains(
+		strings.ToLower(entry.Source), strings.ToLower(q.Source)) {
 		return false
 	}
 	if !observe.HasTags(entry, q.Tags) {

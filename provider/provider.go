@@ -83,6 +83,15 @@ type Provider struct {
 	// Anything set explicitly here or in Options overrides it.
 	Profile observe.Profile
 
+	// Source identifies this process in recorded entries and in anything
+	// shipped to a collector.
+	//
+	// Host and Instance are filled in automatically. Service defaults to
+	// APP_NAME, Environment to the profile, and Release to OBSERVE_RELEASE —
+	// which is the one worth setting in a deployment, because it is what
+	// makes "did the new build do this" answerable.
+	Source observe.Source
+
 	// Sinks send every flushed batch somewhere beyond the store — a
 	// collector, a file, anything satisfying observe.Sink.
 	//
@@ -154,6 +163,8 @@ func (p *Provider) Provide(a app.App) error {
 			"log_floor", profile.MinLogLevel(),
 			"sample_rate", p.sampleRate(profile))
 	}
+
+	options = append(options, observe.WithSource(p.source(profile)))
 
 	sinks, err := p.sinks(a, profile)
 	if err != nil {
@@ -263,12 +274,7 @@ func (p *Provider) sinks(a app.App, profile observe.Profile) ([]observe.Sink, er
 	transport, err := export.HTTP(export.HTTPOptions{
 		Endpoint: endpoint,
 		Token:    strings.TrimSpace(os.Getenv("OBSERVE_EXPORT_TOKEN")),
-		Source: export.Source{
-			Service:     config.MustEnv("APP_NAME", ""),
-			Environment: string(profile),
-			Release:     strings.TrimSpace(os.Getenv("OBSERVE_RELEASE")),
-			Host:        hostname(),
-		},
+		Source:   p.source(profile),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("observe: OBSERVE_EXPORT_URL: %w", err)
@@ -280,17 +286,23 @@ func (p *Provider) sinks(a app.App, profile observe.Profile) ([]observe.Sink, er
 	return []observe.Sink{export.New(transport)}, nil
 }
 
-// hostname names this process's machine, or says it could not.
+// source resolves this process's identity, with explicit fields winning.
 //
-// Not an error: a container that will not report its hostname is not a
-// reason to refuse to boot, and "unknown" in a fleet view is more useful
-// than an application that did not start.
-func hostname() string {
-	name, err := os.Hostname()
-	if err != nil || name == "" {
-		return "unknown"
+// Nothing here can guess a release, so it is read from the environment and
+// left empty when absent — an entry labelled with the wrong release is an
+// entry that sends somebody to the wrong commit.
+func (p *Provider) source(profile observe.Profile) observe.Source {
+	resolved := p.Source
+	if resolved.Service == "" {
+		resolved.Service = config.MustEnv("APP_NAME", "")
 	}
-	return name
+	if resolved.Environment == "" {
+		resolved.Environment = string(profile)
+	}
+	if resolved.Release == "" {
+		resolved.Release = strings.TrimSpace(os.Getenv("OBSERVE_RELEASE"))
+	}
+	return resolved
 }
 
 // profile resolves OBSERVE_PROFILE, with an explicit field winning.

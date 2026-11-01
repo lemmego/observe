@@ -196,6 +196,10 @@ func matches(entry observe.Entry, q observe.Query) bool {
 			return false
 		}
 	}
+	if q.Source != "" && !strings.Contains(
+		strings.ToLower(entry.Source), strings.ToLower(q.Source)) {
+		return false
+	}
 	if !observe.HasTags(entry, q.Tags) {
 		return false
 	}

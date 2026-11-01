@@ -323,6 +323,7 @@ func decodeQuery(r *http.Request) (observe.Query, error) {
 	query := observe.Query{
 		RequestID: values.Get("request"),
 		Contains:  values.Get("q"),
+		Source:    values.Get("source"),
 		Cursor:    observe.Cursor{BeforeID: values.Get("cursor")},
 	}
 

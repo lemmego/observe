@@ -102,9 +102,9 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 	var columns strings.Builder
 	columns.WriteString("INSERT INTO ")
 	columns.WriteString(s.table)
-	columns.WriteString(" (id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags) VALUES ")
+	columns.WriteString(" (id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags, source) VALUES ")
 
-	args := make([]any, 0, len(entries)*11)
+	args := make([]any, 0, len(entries)*12)
 	for i, entry := range entries {
 		if entry.ID == "" {
 			entry.ID = observe.NewID()
@@ -116,7 +116,7 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 			columns.WriteString(", ")
 		}
 		columns.WriteByte('(')
-		for column := range 11 {
+		for column := range 12 {
 			if column > 0 {
 				columns.WriteString(", ")
 			}
@@ -139,6 +139,7 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 			entry.Err,
 			entry.Watcher,
 			encodeTags(entry.Tags),
+			entry.Source,
 		)
 	}
 
@@ -200,6 +201,11 @@ func (s *Store) Entries(ctx context.Context, q observe.Query) ([]observe.Entry, 
 	// store supports. What bounds the scan is retention: run observe:prune.
 	// The published migration is the project's own, so an application with
 	// the volume to care can change the column to an indexed shape there.
+	if q.Source != "" {
+		where = append(where, fmt.Sprintf("LOWER(source) LIKE %s", s.placeholder(len(args)+1)))
+		args = append(args, "%"+strings.ToLower(q.Source)+"%")
+	}
+
 	for _, tag := range observe.NormaliseTags(q.Tags) {
 		where = append(where, fmt.Sprintf("tags LIKE %s", s.placeholder(len(args)+1)))
 		args = append(args, "%"+tagSeparator+tag+tagSeparator+"%")
@@ -219,7 +225,7 @@ func (s *Store) Entries(ctx context.Context, q observe.Query) ([]observe.Entry, 
 		args = append(args, anchor.At.UTC(), anchor.At.UTC(), anchor.ID)
 	}
 
-	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags FROM " + s.table
+	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags, source FROM " + s.table
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -272,7 +278,7 @@ func (s *Store) anchor(ctx context.Context, id string) (observe.Entry, error) {
 func (s *Store) Entry(ctx context.Context, id string) (observe.Entry, error) {
 	ctx = observe.WithoutRecording(ctx)
 
-	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags FROM " +
+	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags, source FROM " +
 		s.table + " WHERE id = " + s.placeholder(1)
 
 	entry, err := scanEntry(s.db.QueryRowContext(ctx, query, id))
@@ -368,10 +374,11 @@ func scanEntry(row scanner) (observe.Entry, error) {
 		errText   sql.NullString
 		watcher   sql.NullString
 		tags      sql.NullString
+		source    sql.NullString
 	)
 
 	if err := row.Scan(&entry.ID, &kind, &requestID, &recorded, &duration,
-		&level, &summary, &data, &errText, &watcher, &tags); err != nil {
+		&level, &summary, &data, &errText, &watcher, &tags, &source); err != nil {
 		return observe.Entry{}, err
 	}
 
@@ -384,6 +391,7 @@ func scanEntry(row scanner) (observe.Entry, error) {
 	entry.Err = errText.String
 	entry.Watcher = watcher.String
 	entry.Tags = decodeTags(tags.String)
+	entry.Source = source.String
 	if data.String != "" {
 		entry.Data = []byte(data.String)
 	}

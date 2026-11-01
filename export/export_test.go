@@ -367,7 +367,7 @@ func TestHTTPPostsAnEnvelope(t *testing.T) {
 		gotAuth     string
 		gotEncoding string
 		gotEnvelope struct {
-			Source  export.Source   `json:"source"`
+			Source  observe.Source  `json:"source"`
 			Entries []observe.Entry `json:"entries"`
 		}
 	)
@@ -392,7 +392,7 @@ func TestHTTPPostsAnEnvelope(t *testing.T) {
 	transport, err := export.HTTP(export.HTTPOptions{
 		Endpoint: server.URL,
 		Token:    "a-token",
-		Source:   export.Source{Service: "productshore", Environment: "production"},
+		Source:   observe.Source{Service: "productshore", Environment: "production"},
 	})
 	if err != nil {
 		t.Fatal(err)

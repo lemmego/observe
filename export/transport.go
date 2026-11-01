@@ -14,20 +14,6 @@ import (
 	"github.com/lemmego/observe"
 )
 
-// Source identifies where entries came from.
-//
-// Fleet telemetry is incoherent without it: two instances' entries are
-// indistinguishable, so "which host is slow" and "did the new release do
-// this" are unaskable. It rides in the envelope once per batch rather than
-// once per entry, because it is the same for all of them.
-type Source struct {
-	Service     string `json:"service,omitempty"`
-	Environment string `json:"environment,omitempty"`
-	Release     string `json:"release,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Instance    string `json:"instance,omitempty"`
-}
-
 // JSONL writes one entry per line to a writer.
 //
 // The sidecar escape hatch, and the thing to test a collector against: point
@@ -84,7 +70,12 @@ type HTTPOptions struct {
 	Token string
 
 	// Source identifies this process in the envelope.
-	Source Source
+	//
+	// The full structured value, once per batch — where it belongs when the
+	// batch is the unit. Each entry also carries a compact rendering of it
+	// in its own field, for a local store that reads rows and has no
+	// envelope to consult.
+	Source observe.Source
 
 	// Client overrides the HTTP client. The default has a thirty-second
 	// timeout, which matters: the zero http.Client has none at all, so a
@@ -105,7 +96,7 @@ type HTTPOptions struct {
 // collector validates a whole request. An envelope also carries the source
 // once, where NDJSON would need it in a header or on every line.
 type envelope struct {
-	Source  Source          `json:"source"`
+	Source  observe.Source  `json:"source"`
 	SentAt  time.Time       `json:"sent_at"`
 	Entries []observe.Entry `json:"entries"`
 }

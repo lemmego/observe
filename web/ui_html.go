@@ -39,6 +39,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="bar">
       <input id="q" placeholder="contains&hellip;" style="min-width:240px">
       <input id="tags" placeholder="tags, comma separated&hellip;" style="min-width:190px">
+      <input id="source" placeholder="host or instance&hellip;" style="min-width:150px">
       <select id="level">
         <option value="">every level</option>
         <option value="warn">warn and above</option>

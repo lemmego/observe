@@ -143,3 +143,54 @@ func mig_20261102000000_add_tags_to_observe_entries_down(tx *sql.Tx) error {
 	return nil
 }
 `
+
+// SourceMigrationStub adds the source column.
+//
+// A third file rather than an edit to either of the first two, for the
+// reason the tags migration is a second one: a fixed MigrationVersion makes
+// a republish a no-op, so editing a stub that has already run changes
+// nothing for an existing project and leaves its table a column short of
+// what the store writes.
+const SourceMigrationStub = `package migrations
+
+import (
+	"database/sql"
+
+	"github.com/lemmego/migration"
+)
+
+func init() {
+	migration.GetMigrator().AddMigration(&migration.Migration{
+		Version: "20261103000000",
+		Up:      mig_20261103000000_add_source_to_observe_entries_up,
+		Down:    mig_20261103000000_add_source_to_observe_entries_down,
+	})
+}
+
+// Which process recorded an entry, as service/host/instance.
+//
+// A shared table across several web processes is the normal deployment, and
+// without this the dashboard cannot say which instance served a request —
+// two instances' entries are indistinguishable, so "which host is slow" and
+// "is it only the workers" have no answer.
+//
+// There is no index, and the column is matched with LIKE so a prefix selects
+// a service and a longer one selects an instance. Retention bounds the scan,
+// the same trade the tags column makes. This file is yours: if you query by
+// source often enough to care, an index on it is a one-line change here.
+func mig_20261103000000_add_source_to_observe_entries_up(tx *sql.Tx) error {
+	if _, err := tx.Exec(
+		"ALTER TABLE observe_entries ADD COLUMN source VARCHAR(128) NOT NULL DEFAULT ''",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mig_20261103000000_add_source_to_observe_entries_down(tx *sql.Tx) error {
+	if _, err := tx.Exec("ALTER TABLE observe_entries DROP COLUMN source"); err != nil {
+		return err
+	}
+	return nil
+}
+`

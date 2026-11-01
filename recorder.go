@@ -130,6 +130,11 @@ type Recorder struct {
 
 	// sinks receive every flushed batch alongside the store.
 	sinks []Sink
+
+	// source identifies this process. Rendered once at construction, because
+	// it is stamped on every entry and does not change.
+	source   Source
+	sourceID string
 }
 
 // Option configures a Recorder.
@@ -262,6 +267,39 @@ func (r *Recorder) Sinks() int {
 	return len(r.sinks)
 }
 
+// WithSource identifies the process recording entries.
+//
+//	observe.New(store, observe.WithSource(observe.Source{
+//	    Service: "productshore", Environment: "production", Release: commit,
+//	}))
+//
+// Host and Instance are filled in from [DefaultSource] when left empty, so a
+// caller supplies only what it knows and still gets a usable identity.
+//
+// Rendered once here rather than per entry: it is stamped on every one and
+// never changes.
+func WithSource(s Source) Option {
+	return func(r *Recorder) {
+		if s.Host == "" {
+			s.Host = hostname()
+		}
+		if s.Instance == "" {
+			s.Instance = newInstanceID()
+		}
+		r.source = s
+		r.sourceID = s.String()
+	}
+}
+
+// Source returns the configured identity, for an exporter to put in an
+// envelope.
+func (r *Recorder) Source() Source {
+	if r == nil {
+		return Source{}
+	}
+	return r.source
+}
+
 // WithProfile applies a profile's options.
 //
 // Listed before any explicit option so an explicit one wins, which is the
@@ -339,6 +377,9 @@ func (r *Recorder) Record(ctx context.Context, e Entry) {
 	}
 	if e.RequestID == "" {
 		e.RequestID = RequestIDFrom(ctx)
+	}
+	if e.Source == "" {
+		e.Source = r.sourceID
 	}
 
 	// Context tags first, then the entry's own, then the derived one. The
