@@ -42,6 +42,26 @@ const (
 	// a stack that is far too large to hang off every request, and groups
 	// with the other times the same thing broke.
 	KindException Kind = "exception"
+
+	// KindOutbound is an HTTP request this application made.
+	//
+	// Named for its direction rather than for being a "client request",
+	// because the word that matters when reading a list is which way it
+	// went: a request entry is something that arrived, an outbound entry is
+	// something that left. A slow page is as often a slow third party as a
+	// slow query, and before this there was nothing to tell them apart.
+	KindOutbound Kind = "outbound"
+
+	// KindDump is a value somebody asked to see.
+	//
+	// The one kind produced on purpose rather than observed, and the one
+	// meant to be deleted before merge — observe.Dump is this project's dd(),
+	// and a dump that reaches production is a mistake the dashboard will
+	// happily show you.
+	KindDump Kind = "dump"
+
+	// KindNotification is one notification delivered, or not, on one channel.
+	KindNotification Kind = "notification"
 )
 
 // Entry is one recorded thing.

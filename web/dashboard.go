@@ -38,6 +38,9 @@ tr.row:hover td{background:#1e293b}
 .kind.job{background:#78350f;color:#fde68a}
 .kind.mail{background:#164e63;color:#a5f3fc}
 .kind.exception{background:#7f1d1d;color:#fecaca}
+.kind.outbound{background:#155e75;color:#a5f3fc}
+.kind.notification{background:#581c87;color:#e9d5ff}
+.kind.dump{background:#365314;color:#d9f99d}
 .sum{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-word}
 .dur{color:#94a3b8;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .bad .sum{color:#fca5a5}
@@ -64,6 +67,9 @@ tr.row:hover td{background:#1e293b}
     <option value="cache">cache</option>
     <option value="job">jobs</option>
     <option value="mail">mail</option>
+    <option value="outbound">outbound calls</option>
+    <option value="notification">notifications</option>
+    <option value="dump">dumps</option>
   </select>
   <select id="level">
     <option value="">every level</option>

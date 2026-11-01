@@ -7,6 +7,7 @@ require (
 	github.com/lemmego/api v0.8.0
 	github.com/lemmego/cache v0.2.2
 	github.com/lemmego/mail v0.2.4
+	github.com/lemmego/notify v0.2.3
 	github.com/lemmego/tasker v0.1.6
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/spf13/cobra v1.8.1

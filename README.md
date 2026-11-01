@@ -101,6 +101,9 @@ nothing and says nothing about it. `observe:last` prints which are active.
 | `cache` | `observecache.Watch(cache, observe.Default())` | the cache |
 | `job` | `observejob.Watch(observe.Default())` | |
 | `mail` | `Transport: observemail.Watch(transport, observe.Default())` | the transport |
+| `notification` | `EventSink: observenotify.Sink()` on notify's provider | notify v0.2.3 |
+| `httpclient` | `&http.Client{Transport: observe.WrapTransport(nil)}` | |
+| `dump` | `observe.Dump(ctx, "label", value)` where you want it | |
 
 `observe.Default()` is nil until the provider has run, and `LoadProviders`
 builds its whole slice before any provider runs — so a watcher constructed
@@ -139,6 +142,46 @@ go quiet during development.
 
 The exception entry carries the request id, so it groups under the request
 that caused it.
+
+### Outgoing HTTP, and dumps
+
+Two of these are not watchers you wire once. They live in the root package
+beside `Wrap` and `RecordQuery`, standard library only, so a program
+instruments itself without importing anything of the framework's.
+
+```go
+client := &http.Client{Transport: observe.WrapTransport(nil)}
+
+observe.Dump(ctx, "why is this nil", order)
+```
+
+`WrapTransport` is how a slow third party stops looking like a slow
+application. It records method, host, path, status and duration — and **not**
+the query string, which is where an API key most often is. A redactor only
+withholds what it recognises, and `?access_token=` arrives under too many
+names, so the query goes entirely and the summary ends `?…` to say there was
+one. No bodies and no headers either; an outgoing request's headers are
+nearly all Authorization.
+
+`Dump` is this project's `dd()`, and the one kind produced on purpose. It
+records **exactly** what you give it — no redaction, because a debugger that
+hid the thing you asked to see would be useless — so a dump that reaches
+production is a mistake the dashboard will happily show you. That is the
+trade, and it is why the kind has its own filter: find them before you ship.
+
+### Notifications
+
+The notification watcher attaches to notify's event sink rather than
+decorating the channels, and the reason is worth knowing before you reach
+for a wrapper of your own. A `Channel` may also implement `BulkChannel`,
+`Supports`, `provider.Publisher` or `io.Closer`, and notify type-asserts for
+all four — so a decorator would have to reproduce every combination of them
+or silently switch the features off.
+
+The cost is correlation: `notify.Event` carries no `context.Context`, so an
+entry cannot say which request caused it. What was sent, to whom, on which
+channel and whether it failed are all legible; "what did this request
+notify" is not. Same shape as the cache watcher.
 
 ## Record your queries
 
@@ -244,6 +287,10 @@ mail bodies. Each is where a credential actually lives — a cached value is a
 rendered page with somebody's session in it, and a mail body holds a
 password-reset link, which *is* a credential.
 
+The one exception is `observe.Dump`, which records exactly the value you
+hand it. Nothing chose what went into the other kinds, so they are guarded;
+a dump was chosen, so it is not. See the note beside it.
+
 Headers and bound query parameters **are** recorded, and go through redaction
 first: secret-looking keys are withheld, and a credential inside a value is
 rewritten, so `DATABASE_URL` keeps its host and loses its password.
@@ -267,6 +314,10 @@ somewhere else". The provider warns when it falls back to it.
 `cache.Listener` is `func(Event)` with no `context.Context`, so there is
 nowhere to read a request id from. Hit and miss rates are legible; "which
 lookups did this request make" is not.
+
+**Notifications are not correlated either**, for the same reason:
+`notify.Event` carries no `context.Context`. What was sent and whether it
+arrived is legible; which request caused it is not.
 
 **A job correlates to itself, not to the request that queued it.**
 `tasker.Manager.Dispatch` has no hook, so enqueueing is not observable at all,
