@@ -72,6 +72,15 @@ type Provider struct {
 	// seven days.
 	Retention time.Duration
 
+	// Profile selects a preset. Empty defers to OBSERVE_PROFILE, whose
+	// absence means development.
+	//
+	// Production stops recording bound parameters, records statements as
+	// shapes, floors the log level at info and samples a tenth of requests —
+	// one variable rather than five that have to be remembered together.
+	// Anything set explicitly here or in Options overrides it.
+	Profile observe.Profile
+
 	// Options are passed to the recorder.
 	Options []observe.Option
 
@@ -112,9 +121,25 @@ func (p *Provider) Provide(a app.App) error {
 		return err
 	}
 
-	options := p.Options
-	if sampler := p.sampler(); sampler != nil {
+	profile := p.profile()
+
+	// The profile first, so an explicit Option or Sampler overrides it —
+	// New applies options in order, and a field set in code is a decision
+	// somebody wrote down.
+	options := append([]observe.Option{observe.WithProfile(profile)}, p.Options...)
+	if sampler := p.sampler(profile); sampler != nil {
 		options = append(options, observe.WithRequestSampler(sampler))
+	}
+
+	// Said out loud, once, because a profile that quietly stopped recording
+	// bound parameters and nine requests in ten would look like a broken
+	// installation to the next person who opened the dashboard.
+	if profile == observe.ProfileProduction {
+		slog.Info("observe: the production profile is on",
+			"bound_parameters", "not recorded",
+			"statements", "normalised",
+			"log_floor", profile.MinLogLevel(),
+			"sample_rate", p.sampleRate(profile))
 	}
 
 	recorder := observe.New(store, options...)
@@ -158,29 +183,48 @@ func (p *Provider) Provide(a app.App) error {
 // `OBSERVE_SAMPLE=` would otherwise mean something different from an absent
 // one, and `OBSERVE_SAMPLE=half` would take the process down rather than
 // record everything and complain.
-func (p *Provider) sampler() func(requestID string) bool {
+func (p *Provider) sampler(profile observe.Profile) func(requestID string) bool {
 	if p.Sampler != nil {
 		return p.Sampler
 	}
 
+	rate := p.sampleRate(profile)
+	if rate >= 1 {
+		return nil
+	}
+	return observe.SampleRequests(rate)
+}
+
+// sampleRate resolves the rate: OBSERVE_SAMPLE if it says anything usable,
+// otherwise the profile's default.
+//
+// The profile having a default is the point of it — production means a tenth
+// unless somebody says otherwise, rather than meaning a tenth only if they
+// remembered a second variable.
+func (p *Provider) sampleRate(profile observe.Profile) float64 {
 	raw := strings.TrimSpace(os.Getenv("OBSERVE_SAMPLE"))
 	if raw == "" {
-		return nil
+		return profile.SampleRate()
 	}
 	rate, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		slog.Warn("observe: OBSERVE_SAMPLE is not a number, so everything is "+
-			"being recorded", "value", raw)
-		return nil
-	}
-	if rate >= 1 {
-		return nil
+		slog.Warn("observe: OBSERVE_SAMPLE is not a number, so the profile's "+
+			"rate is used", "value", raw, "profile", profile, "rate", profile.SampleRate())
+		return profile.SampleRate()
 	}
 	if rate < 0 {
 		slog.Warn("observe: OBSERVE_SAMPLE is negative, so nothing will be "+
 			"recorded; set it between 0 and 1", "value", raw)
 	}
-	return observe.SampleRequests(rate)
+	return rate
+}
+
+// profile resolves OBSERVE_PROFILE, with an explicit field winning.
+func (p *Provider) profile() observe.Profile {
+	if p.Profile != "" {
+		return p.Profile
+	}
+	return observe.ProfileFromEnv()
 }
 
 // Recorder returns the installed recorder, or nil when recording is off.

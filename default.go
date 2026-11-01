@@ -60,9 +60,14 @@ func RecordQuery(ctx context.Context, watcher, statement string, args []any, too
 		watcher = "custom"
 	}
 
-	rendered := make([]string, 0, len(args))
-	for i, arg := range args {
-		rendered = append(rendered, RedactValue(positionalName(i), arg))
+	statement = normalisedFor(rec, statement)
+
+	var rendered []string
+	if rec.RecordsArgs() {
+		rendered = make([]string, 0, len(args))
+		for i, arg := range args {
+			rendered = append(rendered, RedactValue(positionalName(i), arg))
+		}
 	}
 
 	entry := Entry{
@@ -89,3 +94,15 @@ func RecordQuery(ctx context.Context, watcher, statement string, args []any, too
 }
 
 func positionalName(i int) string { return "$" + itoa(i+1) }
+
+// normalisedFor applies the recorder's statement policy.
+//
+// A free function rather than a method so both query paths — the driver
+// wrapper and this one — read the same way and cannot drift into recording
+// the shape in one and the text in the other.
+func normalisedFor(rec *Recorder, statement string) string {
+	if rec.NormalisesStatements() {
+		return NormaliseSQL(statement)
+	}
+	return statement
+}

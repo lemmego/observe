@@ -113,6 +113,12 @@ type Recorder struct {
 	sampler        func(Entry) bool
 	requestSampler func(requestID string) bool
 
+	// recordArgs and normaliseStatements trade detail for volume. Both
+	// default to the detailed answer, because this package was built for a
+	// machine with one user on it and that is still where most of its use is.
+	recordArgs          bool
+	normaliseStatements bool
+
 	// watchers names what is installed, so a reader can tell "nothing
 	// happened" from "nothing was watching".
 	mu       sync.RWMutex
@@ -186,6 +192,65 @@ func WithRequestSampler(keep func(requestID string) bool) Option {
 	return func(r *Recorder) { r.requestSampler = keep }
 }
 
+// WithoutArgs stops bound parameters being recorded with a statement.
+//
+// The most expensive thing on the query path and the least useful in
+// aggregate. Every parameter costs a redaction and a string, and what they
+// buy is the ability to replay one statement exactly — which is worth a
+// great deal while debugging one request and almost nothing while watching
+// ten thousand.
+//
+// The statement itself is still recorded, so a slow query is still findable
+// and an N+1 is still detectable. What goes is the ability to say which id
+// it was looking for.
+//
+// Not a privacy control on its own. It drops the bound parameters, and a
+// value written into the statement text is part of the statement — an ORM
+// binds, so this is rare, but hand-written SQL that interpolates does not.
+// [WithNormalisedStatements] is what removes those, which is the second
+// reason the production profile turns on both.
+func WithoutArgs() Option {
+	return func(r *Recorder) { r.recordArgs = false }
+}
+
+// WithNormalisedStatements records the shape of a statement rather than its
+// text.
+//
+// Literals become placeholders, so fifty executions differing only in an id
+// collapse to one string. That is a volume decision and not a CPU one — the
+// normaliser is a lexer and costs more than copying the statement — and it
+// is the right trade once entries are being shipped or kept, where the same
+// statement written out ten thousand times is ten thousand copies of it.
+//
+// It also makes grouping agree with itself: N+1 detection normalises at read
+// time, and reading an already-normalised statement is idempotent.
+func WithNormalisedStatements() Option {
+	return func(r *Recorder) { r.normaliseStatements = true }
+}
+
+// WithProfile applies a profile's options.
+//
+// Listed before any explicit option so an explicit one wins, which is the
+// order New applies them in anyway.
+func WithProfile(p Profile) Option {
+	return func(r *Recorder) {
+		for _, opt := range p.Options() {
+			opt(r)
+		}
+	}
+}
+
+// RecordsArgs reports whether bound parameters are recorded.
+//
+// Read by the query paths before they render anything, because rendering is
+// the cost being avoided.
+func (r *Recorder) RecordsArgs() bool { return r == nil || r.recordArgs }
+
+// NormalisesStatements reports whether statements are recorded as shapes.
+func (r *Recorder) NormalisesStatements() bool {
+	return r != nil && r.normaliseStatements
+}
+
 // New returns a Recorder writing to a store, and starts its writer.
 //
 // Close it, or the writer goroutine outlives the application.
@@ -196,6 +261,7 @@ func New(store Store, opts ...Option) *Recorder {
 		batchSize:     DefaultBatchSize,
 		flushInterval: DefaultFlushInterval,
 		watchers:      make(map[string]struct{}),
+		recordArgs:    true,
 	}
 	for _, opt := range opts {
 		opt(r)

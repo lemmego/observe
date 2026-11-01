@@ -90,11 +90,21 @@ func recordStatement(ctx context.Context, query string, args []driver.NamedValue
 		}
 	}
 
+	statement := query
+	if rec.NormalisesStatements() {
+		statement = NormaliseSQL(query)
+	}
+
 	payload := sqlPayload{
-		SQL:         query,
-		Args:        renderArgs(args),
+		SQL:         statement,
 		Rows:        rows,
 		Correlation: correlationOf(ctx),
+	}
+	// Rendered only when they will be kept. Redacting and stringifying every
+	// parameter is the most expensive thing on this path, so asking first is
+	// the whole of what WithoutArgs buys.
+	if rec.RecordsArgs() {
+		payload.Args = renderArgs(args)
 	}
 	data, merr := json.Marshal(payload)
 	if merr != nil {
@@ -109,7 +119,7 @@ func recordStatement(ctx context.Context, query string, args []driver.NamedValue
 		At:       started,
 		Duration: time.Since(started),
 		Level:    slog.LevelInfo,
-		Summary:  collapseWhitespace(query),
+		Summary:  collapseWhitespace(statement),
 		Data:     data,
 		Watcher:  WatcherSQLDriver,
 	}

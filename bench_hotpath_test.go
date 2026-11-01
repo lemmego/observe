@@ -73,3 +73,43 @@ func BenchmarkQueryRecorded(b *testing.B) {
 		observe.RecordQuery(ctx, "sqldriver", stmt, args(), 3*time.Millisecond, nil)
 	}
 }
+
+// And what the production profile saves on a statement that is kept, which
+// is the other half: sampling helps the ones you throw away, this helps the
+// ones you do not.
+func BenchmarkQueryRecordedInProduction(b *testing.B) {
+	rec := observe.New(memory.New(),
+		observe.WithQueueSize(1<<16),
+		observe.WithProfile(observe.ProfileProduction))
+	observe.SetDefault(rec)
+	b.Cleanup(func() { observe.SetDefault(nil); _ = rec.Close(context.Background()) })
+
+	ctx := observe.WithRequestID(context.Background(), observe.NewID())
+	b.ReportAllocs()
+	for b.Loop() {
+		observe.RecordQuery(ctx, "sqldriver", stmt, args(), 3*time.Millisecond, nil)
+	}
+}
+
+// WithoutArgs on its own, so the two halves of the production profile can be
+// told apart rather than argued about together.
+func BenchmarkQueryRecordedWithoutArgs(b *testing.B) {
+	rec := observe.New(memory.New(), observe.WithQueueSize(1<<16), observe.WithoutArgs())
+	observe.SetDefault(rec)
+	b.Cleanup(func() { observe.SetDefault(nil); _ = rec.Close(context.Background()) })
+
+	ctx := observe.WithRequestID(context.Background(), observe.NewID())
+	b.ReportAllocs()
+	for b.Loop() {
+		observe.RecordQuery(ctx, "sqldriver", stmt, args(), 3*time.Millisecond, nil)
+	}
+}
+
+// And the normaliser alone, which is the one that costs rather than saves on
+// this path: it buys volume downstream, not time here.
+func BenchmarkNormaliseSQL(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = observe.NormaliseSQL(stmt)
+	}
+}

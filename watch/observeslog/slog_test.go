@@ -244,3 +244,54 @@ func TestDerivingTwiceDoesNotShareBackingArrays(t *testing.T) {
 		t.Errorf("the two derived loggers shared a backing array: %v", seen)
 	}
 }
+
+// TestTheLevelFloorRefusesBeforeTheRecordIsBuilt.
+//
+// Enabled is the cheapest gate there is: slog skips building the Record
+// entirely, so a line below the floor costs an integer comparison and no
+// allocation. Asserting through Enabled rather than by counting entries is
+// the point — counting would pass with the floor implemented in Handle,
+// which is where it would cost everything it is meant to save.
+func TestTheLevelFloorRefusesBeforeTheRecordIsBuilt(t *testing.T) {
+	handler := observeslog.Handler(observeslog.MinLevel(slog.LevelWarn))
+
+	if handler.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("Enabled said yes to debug under a warn floor")
+	}
+	if handler.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("Enabled said yes to info under a warn floor")
+	}
+	if !handler.Enabled(context.Background(), slog.LevelError) {
+		t.Error("Enabled said no to error under a warn floor")
+	}
+}
+
+// A derived logger keeps the floor. Without this, one logger.With() call
+// silently restores debug recording in production.
+func TestTheFloorSurvivesWithAttrsAndWithGroup(t *testing.T) {
+	handler := observeslog.Handler(observeslog.MinLevel(slog.LevelWarn))
+
+	for name, derived := range map[string]slog.Handler{
+		"WithAttrs": handler.WithAttrs([]slog.Attr{slog.String("a", "b")}),
+		"WithGroup": handler.WithGroup("g"),
+	} {
+		if derived.Enabled(context.Background(), slog.LevelDebug) {
+			t.Errorf("%s lost the floor", name)
+		}
+	}
+}
+
+// With no option the floor comes from the profile, so a production
+// deployment stops recording debug lines without wiring a second thing.
+func TestTheFloorDefaultsToTheProfile(t *testing.T) {
+	t.Setenv(observe.EnvProfile, "production")
+	if observeslog.Handler().Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("debug is recorded under the production profile")
+	}
+
+	t.Setenv(observe.EnvProfile, "development")
+	if !observeslog.Handler().Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("debug is refused under the development profile, where there " +
+			"should be no floor at all")
+	}
+}

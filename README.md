@@ -456,6 +456,50 @@ The other limitation is real too. At a low rate a failed request gives you the
 request entry and the exception, not the queries that led there — those were
 never built. Raise the rate when you need them.
 
+## Leaving it on in production
+
+```
+OBSERVE_PROFILE=production
+```
+
+One variable rather than five that have to be remembered together. It stops
+recording bound parameters, records statements as shapes, floors the log
+level at info, and samples a tenth of requests. Anything set explicitly in
+code overrides it.
+
+| | development | production |
+|---|---|---|
+| bound parameters | recorded | not recorded |
+| statements | as written | normalised to shapes |
+| log records | all | info and above |
+| sample rate | everything | a tenth |
+
+What each costs, measured rather than asserted:
+
+```
+BenchmarkQueryRecorded               2675 ns/op   1473 B/op   14 allocs/op
+BenchmarkQueryRecordedWithoutArgs    1859 ns/op   1321 B/op    8 allocs/op
+BenchmarkQueryRecordedInProduction   2628 ns/op   1513 B/op    9 allocs/op
+BenchmarkNormaliseSQL                 736 ns/op    192 B/op    1 allocs/op
+```
+
+`WithoutArgs` is the saving — 30% and six allocations, because redacting and
+stringifying every parameter was the most expensive thing on the path.
+Normalising costs about 700ns and one allocation back; it buys smaller stored
+and shipped entries rather than time, and it is in the profile because that is
+what matters once entries leave the process.
+
+**`WithoutArgs` is not a privacy control on its own.** It drops the bound
+parameters, and a value written into the statement *text* is part of the
+statement. An ORM binds, so this is rare — hand-written SQL that interpolates
+does not. `WithNormalisedStatements` is what removes those, which is the
+second reason the profile turns on both.
+
+The log floor lives in the handler's `Enabled`, so a record below it costs an
+integer comparison and is never built. That is also its cost: a line refused
+there cannot be recovered by turning sampling up, which is why there is no
+floor in development.
+
 ### Two samplers
 
 `WithRequestSampler` is the coarse gate, over a correlation id, consulted

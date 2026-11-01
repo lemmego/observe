@@ -31,10 +31,36 @@ import (
 // Watcher is the name entries from this handler carry.
 const Watcher = "slog"
 
+// Option configures the handler.
+type Option func(*handler)
+
+// MinLevel refuses records below a level.
+//
+// Defaults to the profile's: everything in development, info and above in
+// production. Pass this to override either.
+func MinLevel(level slog.Level) Option {
+	return func(h *handler) { h.min = level }
+}
+
 // Handler returns an slog.Handler that records to observe's default recorder.
-func Handler() slog.Handler { return &handler{} }
+//
+//	log.Options{Extra: []slog.Handler{observeslog.Handler()}}
+//
+// With no options it takes its floor from OBSERVE_PROFILE, so a production
+// deployment stops recording debug lines without anybody having to wire a
+// second thing.
+func Handler(opts ...Option) slog.Handler {
+	h := &handler{min: observe.ProfileFromEnv().MinLogLevel()}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
 
 type handler struct {
+	// min is the floor. See Enabled.
+	min slog.Level
+
 	// fixed are the attrs from WithAttrs, already flattened and already
 	// qualified by whatever groups were open when they were added.
 	//
@@ -51,12 +77,22 @@ type handler struct {
 
 var _ slog.Handler = (*handler)(nil)
 
-// Enabled is always true.
+// Enabled refuses records below the floor.
 //
-// The recorder's own sampler decides what is kept, and a level filter here
-// would silently shadow it: a debug record dropped at this gate can never be
-// recovered by turning sampling up.
-func (h *handler) Enabled(context.Context, slog.Level) bool { return true }
+// This is the cheapest gate there is: slog skips building the Record
+// entirely, so a debug line below the floor costs an integer comparison and
+// no allocation. That is why the floor lives here rather than in Handle.
+//
+// The cost is real and is the reason the floor is off in development: a
+// record refused here can never be recovered by turning sampling up, because
+// it was never made. In production that is the point — recording every debug
+// line into a store is the single easiest way to make the telemetry pipeline
+// the application's largest writer — and in development it would be a
+// silent shadow over the recorder's own sampler, which is why the default is
+// no floor at all.
+func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.min
+}
 
 func (h *handler) Handle(ctx context.Context, record slog.Record) error {
 	recorder := observe.Default()
@@ -129,7 +165,7 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for _, attr := range attrs {
 		collect(fixed, h.groups, attr)
 	}
-	return &handler{fixed: fixed, groups: h.groups}
+	return &handler{min: h.min, fixed: fixed, groups: h.groups}
 }
 
 func (h *handler) WithGroup(name string) slog.Handler {
@@ -142,7 +178,7 @@ func (h *handler) WithGroup(name string) slog.Handler {
 	groups := make([]string, 0, len(h.groups)+1)
 	groups = append(groups, h.groups...)
 	groups = append(groups, name)
-	return &handler{fixed: h.fixed, groups: groups}
+	return &handler{min: h.min, fixed: h.fixed, groups: groups}
 }
 
 // collect flattens an attribute into the payload, qualifying it with whatever
