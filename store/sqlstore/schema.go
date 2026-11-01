@@ -21,6 +21,13 @@ import (
 //     every indexed column is VARCHAR with a length.
 //   - TIMESTAMP WITH TIME ZONE takes its precision before the zone on
 //     Postgres, so it is written out rather than parameterised.
+//
+// tags has no index, and that is a decision rather than an omission: it is
+// matched with LIKE, which no btree can serve, and the portable alternatives
+// across these three dialects are a join table (double the writes on a hot
+// path) or a Postgres-only text[] with GIN. Retention is what bounds the
+// scan. MaxTags and MaxTagLength are what bound the column — 12 × 64 plus
+// separators fits 1024 with room to spare.
 func SchemaStatements(dialect Dialect, table string) []string {
 	if table == "" {
 		table = DefaultTable
@@ -53,7 +60,8 @@ func SchemaStatements(dialect Dialect, table string) []string {
 	summary %s NOT NULL,
 	data %s,
 	error %s NOT NULL,
-	watcher VARCHAR(64) NOT NULL DEFAULT ''
+	watcher VARCHAR(64) NOT NULL DEFAULT '',
+	tags VARCHAR(1024) NOT NULL DEFAULT ''
 )`, table, timestamp, text, text, text)
 
 	return []string{

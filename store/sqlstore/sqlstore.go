@@ -102,9 +102,9 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 	var columns strings.Builder
 	columns.WriteString("INSERT INTO ")
 	columns.WriteString(s.table)
-	columns.WriteString(" (id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher) VALUES ")
+	columns.WriteString(" (id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags) VALUES ")
 
-	args := make([]any, 0, len(entries)*10)
+	args := make([]any, 0, len(entries)*11)
 	for i, entry := range entries {
 		if entry.ID == "" {
 			entry.ID = observe.NewID()
@@ -116,7 +116,7 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 			columns.WriteString(", ")
 		}
 		columns.WriteByte('(')
-		for column := range 10 {
+		for column := range 11 {
 			if column > 0 {
 				columns.WriteString(", ")
 			}
@@ -138,6 +138,7 @@ func (s *Store) Record(ctx context.Context, entries []observe.Entry) error {
 			string(entry.Data),
 			entry.Err,
 			entry.Watcher,
+			encodeTags(entry.Tags),
 		)
 	}
 
@@ -189,6 +190,21 @@ func (s *Store) Entries(ctx context.Context, q observe.Query) ([]observe.Entry, 
 		args = append(args, pattern, pattern, pattern)
 	}
 
+	// One LIKE per tag, anchored on the separators the column is packed
+	// with. The anchors are what make it exact: `%user:7%` would also match
+	// `user:70`, which is somebody else's data in an answer about this one.
+	//
+	// There is deliberately no index behind this. A substring match cannot
+	// use a btree, and the alternatives — a join table, or a Postgres text[]
+	// with a GIN index — are not portable across the three dialects this
+	// store supports. What bounds the scan is retention: run observe:prune.
+	// The published migration is the project's own, so an application with
+	// the volume to care can change the column to an indexed shape there.
+	for _, tag := range observe.NormaliseTags(q.Tags) {
+		where = append(where, fmt.Sprintf("tags LIKE %s", s.placeholder(len(args)+1)))
+		args = append(args, "%"+tagSeparator+tag+tagSeparator+"%")
+	}
+
 	// The cursor is exclusive and resolved against the ordering columns, not
 	// against an offset: entries arrive continuously, so an offset shifts
 	// under the reader and repeats rows at every page boundary.
@@ -203,7 +219,7 @@ func (s *Store) Entries(ctx context.Context, q observe.Query) ([]observe.Entry, 
 		args = append(args, anchor.At.UTC(), anchor.At.UTC(), anchor.ID)
 	}
 
-	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher FROM " + s.table
+	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags FROM " + s.table
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -256,7 +272,7 @@ func (s *Store) anchor(ctx context.Context, id string) (observe.Entry, error) {
 func (s *Store) Entry(ctx context.Context, id string) (observe.Entry, error) {
 	ctx = observe.WithoutRecording(ctx)
 
-	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher FROM " +
+	query := "SELECT id, kind, request_id, recorded_at, duration_ns, level, summary, data, error, watcher, tags FROM " +
 		s.table + " WHERE id = " + s.placeholder(1)
 
 	entry, err := scanEntry(s.db.QueryRowContext(ctx, query, id))
@@ -306,10 +322,11 @@ func scanEntry(row scanner) (observe.Entry, error) {
 		data      sql.NullString
 		errText   sql.NullString
 		watcher   sql.NullString
+		tags      sql.NullString
 	)
 
 	if err := row.Scan(&entry.ID, &kind, &requestID, &recorded, &duration,
-		&level, &summary, &data, &errText, &watcher); err != nil {
+		&level, &summary, &data, &errText, &watcher, &tags); err != nil {
 		return observe.Entry{}, err
 	}
 
@@ -321,6 +338,7 @@ func scanEntry(row scanner) (observe.Entry, error) {
 	entry.Summary = summary.String
 	entry.Err = errText.String
 	entry.Watcher = watcher.String
+	entry.Tags = decodeTags(tags.String)
 	if data.String != "" {
 		entry.Data = []byte(data.String)
 	}

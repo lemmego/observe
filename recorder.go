@@ -38,8 +38,21 @@ type Stats struct {
 	// Failed is how many entries a store refused to write.
 	Failed uint64 `json:"failed"`
 
+	// Sampled is how many a sampler declined.
+	//
+	// Counted separately from Dropped because they mean opposite things: a
+	// dropped entry is the store failing to keep up, a sampled one is the
+	// configuration working as asked. Without this number, a list that is
+	// one tenth as long as expected looks like a broken watcher rather than
+	// like OBSERVE_SAMPLE=0.1.
+	Sampled uint64 `json:"sampled"`
+
 	// Queued is how many are waiting right now.
 	Queued int `json:"queued"`
+
+	// Paused reports whether this process is recording, so the dashboard
+	// does not present an empty list as an idle application.
+	Paused bool `json:"paused"`
 }
 
 // Recorder accepts entries and writes them to a store, off the caller's
@@ -65,11 +78,21 @@ type Recorder struct {
 	recorded atomic.Uint64
 	dropped  atomic.Uint64
 	failed   atomic.Uint64
+	sampled  atomic.Uint64
 
 	// dropLogged keeps a saturated queue from writing a log line per dropped
 	// entry — which would turn one problem into two, since the slog watcher
 	// would record those lines too.
 	dropLogged atomic.Bool
+
+	// paused stops recording without tearing the recorder down.
+	//
+	// Per-process, which is the whole of what it claims to be: the dashboard
+	// button pauses the process that served the click. That is exactly right
+	// in development, where there is one process and a pause is how you read
+	// a list that will not stop scrolling — and it is not a deployment-wide
+	// switch, which is what OBSERVE_ENABLED and a sampler are for.
+	paused atomic.Bool
 
 	// storing is set while a batch is being written.
 	//
@@ -93,6 +116,10 @@ type Recorder struct {
 	// happened" from "nothing was watching".
 	mu       sync.RWMutex
 	watchers map[string]struct{}
+
+	// subs are the live tails. See subscribe.go.
+	subsMu sync.RWMutex
+	subs   map[*subscriber]struct{}
 }
 
 // Option configures a Recorder.
@@ -166,7 +193,7 @@ func New(store Store, opts ...Option) *Recorder {
 // path that must not care: a handler cannot usefully respond to "the debug
 // recorder is busy".
 func (r *Recorder) Record(ctx context.Context, e Entry) {
-	if r == nil || !Recording(ctx) {
+	if r == nil || r.paused.Load() || !Recording(ctx) {
 		return
 	}
 
@@ -180,9 +207,27 @@ func (r *Recorder) Record(ctx context.Context, e Entry) {
 		e.RequestID = RequestIDFrom(ctx)
 	}
 
+	// Context tags first, then the entry's own, then the derived one. The
+	// order decides which survive the MaxTags cap, and a request-scoped tag
+	// — who this was — is worth more than a watcher's detail.
+	tags := TagsFrom(ctx)
+	if len(e.Tags) > 0 {
+		tags = append(append([]string(nil), tags...), e.Tags...)
+	}
+	if e.Failed() {
+		tags = append(append([]string(nil), tags...), TagFailed)
+	}
+	e.Tags = NormaliseTags(tags)
+
 	if r.sampler != nil && !r.sampler(e) {
+		r.sampled.Add(1)
 		return
 	}
+
+	// Before the queue, so a tail is live rather than a view of the last
+	// flush — and so an entry the queue has no room for is still seen by
+	// whoever is watching, which is exactly when somebody is watching.
+	r.publish(e)
 
 	select {
 	case r.queue <- e:
@@ -198,6 +243,34 @@ func (r *Recorder) Record(ctx context.Context, e Entry) {
 				"queue", cap(r.queue), "kind", e.Kind, "watcher", e.Watcher)
 		}
 	}
+}
+
+// Pause stops this process recording.
+//
+// Entries already queued are still written, so pausing does not lose what was
+// in flight — the point is to stop adding, not to discard.
+//
+// It is deliberately per-process and not persisted. A command in another
+// process cannot reach this, which is why there is no observe:pause: it would
+// pause the CLI's own recorder and report success, leaving the web process
+// recording exactly as before. A deployment-wide switch is OBSERVE_ENABLED
+// plus a restart, or a sampler.
+func (r *Recorder) Pause() {
+	if r != nil {
+		r.paused.Store(true)
+	}
+}
+
+// Resume starts recording again.
+func (r *Recorder) Resume() {
+	if r != nil {
+		r.paused.Store(false)
+	}
+}
+
+// Paused reports whether this process is recording.
+func (r *Recorder) Paused() bool {
+	return r != nil && r.paused.Load()
 }
 
 // Watching registers that a watcher is installed, so a reader can tell an
@@ -245,7 +318,9 @@ func (r *Recorder) Stats() Stats {
 		Recorded: r.recorded.Load(),
 		Dropped:  r.dropped.Load(),
 		Failed:   r.failed.Load(),
+		Sampled:  r.sampled.Load(),
 		Queued:   len(r.queue),
+		Paused:   r.paused.Load(),
 	}
 }
 
@@ -268,6 +343,7 @@ func (r *Recorder) Close(ctx context.Context) error {
 		close(r.done)
 		r.wg.Wait()
 		r.drain(ctx)
+		r.closeSubscribers()
 	})
 	return nil
 }
@@ -341,5 +417,21 @@ func (r *Recorder) flush(batch []Entry) {
 		r.failed.Add(uint64(len(batch)))
 		slog.Error("observe: a batch of entries could not be stored",
 			"entries", len(batch), "error", err)
+	}
+}
+
+// closeSubscribers ends every live tail.
+//
+// These connections are long-lived by construction — a tail is open for as
+// long as somebody has the dashboard in a tab — so a recorder that shut down
+// without closing them would hang the process on every graceful stop.
+func (r *Recorder) closeSubscribers() {
+	r.subsMu.Lock()
+	subs := r.subs
+	r.subs = nil
+	r.subsMu.Unlock()
+
+	for sub := range subs {
+		sub.close()
 	}
 }

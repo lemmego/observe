@@ -41,6 +41,13 @@ lemmego run migrate up
 Step 2 is the easy one to miss: the migration was written by a running binary
 that does not contain it yet.
 
+Two files are published, not one: the table, and an `ALTER` adding the `tags`
+column. A second migration rather than an edit to the first, because the
+first has already run everywhere it was going to — so editing it would change
+nothing for an existing project and leave its table a column short of what
+the store writes. **Upgrading from v0.4.0 or earlier means republishing and
+migrating again.**
+
 ## Register it
 
 ```go
@@ -329,7 +336,10 @@ has to be.
 ## Read it three ways
 
 **A dashboard**, at `/observe`. Server-rendered Go, no build step. Click a
-request to see everything it did.
+request to see everything it did, or an entry to see its payload — a panic's
+stack and a dump's value live there, and the list shows one line of it. It
+tails live over SSE rather than polling, so it is current rather than up to
+five seconds stale.
 
 **A terminal.** `lemmego run observe:last`, or
 `lemmego run observe:last --request <id>`.
@@ -353,10 +363,100 @@ anything exists.
 | `observe-slow-queries` | the slowest statements |
 | `observe-repeated-queries` | N+1 candidates, by request |
 | `observe-errors` | error-level entries of every kind, structured |
+| `observe-tagged` | everything carrying a set of tags, across requests |
 
 These supersede `read-log-entries` and `last-error`, which tail a rotating
 file and match with `strings.Contains` — so `last-error` finds a request to
 `/error-pages`. Keep those as the raw-file escape hatch.
+
+## Tags
+
+A request id groups what one request did. A **tag** groups across requests,
+which is the question a correlation id structurally cannot answer, because
+every request has a different one.
+
+Put them on the context, once, where you know who this is:
+
+```go
+// in a middleware, after auth has resolved the user
+ctx = observe.WithTags(r.Context(), "user:"+id, "tenant:"+tenant)
+```
+
+Everything recorded under that context carries them — the request entry, its
+queries, its cache lookups, its gate checks, and whatever watcher is added
+next year. Tagging per watcher instead would mean teaching each one about
+authentication and would still miss the ones added later.
+
+Three tags arrive without you doing anything: `failed` on every entry that
+went wrong, and `method:GET` / `status:500` on request entries. There is
+deliberately no `slow` tag: a threshold that means something for a query
+means nothing for a request, and one number across both would be wrong twice.
+
+Filter on them in the dashboard (click a chip), in the list and tail
+(`?tags=user:7,failed`), or over MCP (`observe-tagged`). **Every** tag must
+match, not any — a reader asking for `user:7` and `failed` wants what that
+user broke.
+
+Tags are capped at 12 per entry and 64 characters each, for the reason the
+memory store is bounded: what an application knows about a request usually
+came from the request.
+
+**There is no index on the column.** It is matched with `LIKE`, which no
+btree can serve, and the portable alternatives across Postgres, MySQL and
+SQLite are a join table (double the writes on a hot path) or a Postgres-only
+`text[]` with GIN. Retention is what bounds the scan — and the migration is
+published into your project, so an application with the volume to care can
+change the column there.
+
+## Sampling, and turning it down
+
+`OBSERVE_SAMPLE` is a rate between 0 and 1 — and it samples **requests**, not
+entries:
+
+```
+OBSERVE_SAMPLE=0.1
+```
+
+Keeping a tenth of the queries of every request gives you ten percent of a
+story about all of them; keeping every query of a tenth of requests gives you
+the whole story about some, and the whole story is the one you can debug. The
+decision is a hash of the request id, so every entry of one request agrees —
+including entries recorded minutes later by a worker that inherited the id.
+
+Sampled-out entries are counted separately from dropped ones and shown in the
+dashboard. Without that number, a list one tenth as long as expected looks
+like a broken watcher rather than like the configuration working.
+
+The dashboard also has a **Pause** button. It pauses the process that served
+the click, which is exactly right in development — one process, and a pause
+is how you read a list that will not stop scrolling. It is **not** a
+deployment switch: with several web processes the others keep recording, and
+the page says so. There is no `observe:pause` command for the same reason —
+a command runs in its own process, so it would pause its own recorder and
+report success while the web server carried on.
+
+## The live tail
+
+The dashboard subscribes to the recorder over SSE instead of polling. Entries
+appear as they are recorded, before the store writes them.
+
+A tail that falls behind is **closed, not starved**. Dropping entries and
+carrying on would leave a reader watching a stream with holes in it and no
+way to tell, which for a debugging tool is the worst of the three outcomes —
+so the server sends a `gap` event and ends the stream, and the page says what
+happened. `Last-Event-ID` is deliberately not honoured: there is no backlog,
+so resuming would be a promise the server cannot keep.
+
+`recorder.Subscribe` is public, so a tail is not only the dashboard's:
+
+```go
+entries, stop := recorder.Subscribe(0)
+defer stop()
+for entry := range entries { … }
+```
+
+A subscriber never blocks a recording — the send is non-blocking, the same
+trade the entry queue makes and for the same reason.
 
 ## N+1 detection
 
@@ -425,6 +525,15 @@ wholesale.
 statements uncorrelated rather than dropping them, and the entry says
 `"correlation":"unavailable"` so you stop looking for a cause.
 
+**Tag filtering is a scan, not an index lookup.** See **Tags** above for why,
+and what to change if your volume outgrows it.
+
+**A tail has no backlog.** `Last-Event-ID` is not honoured; a tail that falls
+behind is closed and says so.
+
+**Pausing is per-process.** There is no `observe:pause` command, and the
+reason is in **Sampling, and turning it down**.
+
 **Nothing prunes itself.** Run `lemmego run observe:prune` on a schedule.
 
 ## Safety
@@ -434,7 +543,11 @@ statements uncorrelated rather than dropping them, and the entry says
   dashboard answers 401 to everything until you give it a predicate.
 - The dashboard is mounted on the bare mux, so none of your router's
   middleware runs for it. The guard is applied by this package, by hand.
-- Set a `Sampler` before using this under real traffic.
+- Set `OBSERVE_SAMPLE` before using this under real traffic.
+- The tail is behind the same guard as everything else: an unauthenticated
+  stream would be the whole credential dump, live.
+- Pausing is a `POST`, so your CSRF middleware applies to it — which is the
+  right default for a button that turns the debugger off.
 
 ## Testing
 

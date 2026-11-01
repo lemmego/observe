@@ -202,3 +202,141 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// TestAnEntryCanBeOpenedOnItsOwn.
+//
+// An exception's stack and a dump's value are in the payload, and the list
+// shows one line of it — so an entry is worth opening even when the request
+// view is not what you want.
+func TestAnEntryCanBeOpenedOnItsOwn(t *testing.T) {
+	server, store := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	if err := store.Record(context.Background(), []observe.Entry{{
+		ID: "entry-1", Kind: observe.KindException, Summary: "panic: nil map",
+		Data: []byte(`{"stack":"goroutine 1"}`), Tags: []string{"user:7"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/api/entries/entry-1", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("answered %d", recorder.Code)
+	}
+	var body struct {
+		Data observe.Entry `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Summary != "panic: nil map" {
+		t.Errorf("Summary = %q", body.Data.Summary)
+	}
+	if string(body.Data.Data) != `{"stack":"goroutine 1"}` {
+		t.Errorf("the payload did not round-trip: %s", body.Data.Data)
+	}
+	if len(body.Data.Tags) != 1 || body.Data.Tags[0] != "user:7" {
+		t.Errorf("Tags = %v", body.Data.Tags)
+	}
+}
+
+// An id naming an entry that has since been pruned is ordinary, and a reader
+// following a stale link should be told it is gone rather than that something
+// broke.
+func TestAnUnknownEntryIs404(t *testing.T) {
+	server, _ := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/api/entries/nope", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("answered %d for an unknown entry, want 404", recorder.Code)
+	}
+}
+
+// Tags filter the list the same way they filter the tail, which is what keeps
+// a chip in the UI meaning one thing.
+func TestTheListFiltersOnTags(t *testing.T) {
+	server, store := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	if err := store.Record(context.Background(), []observe.Entry{
+		{ID: "a", Kind: observe.KindQuery, Summary: "theirs", Tags: []string{"user:7"}},
+		{ID: "b", Kind: observe.KindQuery, Summary: "somebody else", Tags: []string{"user:8"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/observe/api/entries?tags=user:7", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("answered %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "theirs") {
+		t.Error("the tagged entry is missing")
+	}
+	if strings.Contains(recorder.Body.String(), "somebody else") {
+		t.Error("an entry with a different tag was returned")
+	}
+}
+
+// Pausing is a POST because it changes state — which also means the
+// application's CSRF middleware applies when the dashboard is mounted behind
+// it, and that is the right default for a button that turns the debugger off.
+func TestPausingIsAPostAndIsReportedInStats(t *testing.T) {
+	server, _ := newServer(t)
+	server.UseAuth(func(next http.Handler) http.Handler { return next })
+
+	// A GET does not pause. It answers 200 because "/observe/" is a subtree
+	// pattern and anything unmatched under it serves the dashboard — so the
+	// assertion is on the state, not on the status, which is the part that
+	// would actually be a bug.
+	get := httptest.NewRecorder()
+	server.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/observe/api/pause", nil))
+
+	afterGet := httptest.NewRecorder()
+	server.ServeHTTP(afterGet, httptest.NewRequest(http.MethodGet, "/observe/api/stats", nil))
+	if !strings.Contains(afterGet.Body.String(), `"paused":false`) {
+		t.Error("a GET paused recording; a state change must not be reachable " +
+			"by a method that CSRF protection does not cover")
+	}
+
+	post := httptest.NewRecorder()
+	server.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/observe/api/pause", nil))
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST answered %d", post.Code)
+	}
+
+	stats := httptest.NewRecorder()
+	server.ServeHTTP(stats, httptest.NewRequest(http.MethodGet, "/observe/api/stats", nil))
+	if !strings.Contains(stats.Body.String(), `"paused":true`) {
+		t.Errorf("stats do not report the pause: %s", stats.Body.String())
+	}
+
+	resume := httptest.NewRecorder()
+	server.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/observe/api/pause?resume=1", nil))
+	if resume.Code != http.StatusOK {
+		t.Fatalf("resume answered %d", resume.Code)
+	}
+	if !strings.Contains(resume.Body.String(), `"paused":false`) {
+		t.Errorf("resume did not resume: %s", resume.Body.String())
+	}
+}
+
+// The tail is behind the same guard as everything else. A stream that bypassed
+// it would be the whole credential dump, live.
+func TestTheTailIsClosedWithoutAuthentication(t *testing.T) {
+	server, _ := newServer(t)
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/observe/api/tail", nil))
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("the tail answered %d with no auth configured, want 401", recorder.Code)
+	}
+}

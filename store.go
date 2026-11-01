@@ -59,6 +59,13 @@ type Query struct {
 	// Contains matches the summary and the payload.
 	Contains string
 
+	// Tags restricts to entries carrying **every** one of these tags.
+	//
+	// Every rather than any, because tags narrow: a reader asking for
+	// "user:7" and "failed" wants what that user broke, not everything that
+	// user did plus everything that broke.
+	Tags []string
+
 	Cursor Cursor
 }
 

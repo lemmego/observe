@@ -42,6 +42,18 @@ func TestThePublishedMigrationMatchesTheSchema(t *testing.T) {
 		}
 	}
 
+	// tags arrives in a second migration rather than the first, because the
+	// first has already run everywhere it was going to run — so the pair is
+	// what has to match the schema, not either file alone.
+	if !strings.Contains(provider.TagsMigrationStub, "ADD COLUMN tags") {
+		t.Error("nothing published adds the tags column, which the store " +
+			"writes on every entry")
+	}
+	if strings.Contains(provider.MigrationStub, `"tags"`) {
+		t.Error("the create migration now makes tags as well, so publishing " +
+			"both would ALTER a column that already exists")
+	}
+
 	// And the indexes, by the names the schema uses. They are not decoration:
 	// the first serves the only question this table exists to answer, and the
 	// second is what the list view's cursor pages on.
@@ -112,4 +124,58 @@ func indexName(statement string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+// TestBothPublishedMigrationsAreValidGo, for the reason the first one is
+// checked: nothing compiles a string until somebody publishes it into their
+// project, which is three commands after the mistake was made and in their
+// repository rather than this one.
+func TestBothPublishedMigrationsAreValidGo(t *testing.T) {
+	for name, stub := range map[string]string{
+		"create": provider.MigrationStub,
+		"tags":   provider.TagsMigrationStub,
+	} {
+		if _, err := parser.ParseFile(token.NewFileSet(), name+".go", stub,
+			parser.AllErrors); err != nil {
+			t.Errorf("the %s migration is not valid Go: %v", name, err)
+		}
+	}
+}
+
+// TestTheTagsMigrationIsOrderedAfterTheCreate.
+//
+// The migrator runs in version order, so an ALTER that sorted before its
+// CREATE would fail against a table that does not exist yet — on a first
+// publish, which is the one case nobody tests twice.
+func TestTheTagsMigrationIsOrderedAfterTheCreate(t *testing.T) {
+	if provider.TagsMigrationVersion <= provider.MigrationVersion {
+		t.Errorf("TagsMigrationVersion %s does not sort after MigrationVersion %s",
+			provider.TagsMigrationVersion, provider.MigrationVersion)
+	}
+	if !strings.Contains(provider.TagsMigrationStub, provider.TagsMigrationVersion) {
+		t.Error("the tags stub registers a version other than TagsMigrationVersion")
+	}
+}
+
+// TestEveryPublishableIsNamespacedAndDistinct.
+//
+// Two publishables writing one path would mean the second silently replaced
+// the first, and a migration file that is not there is a column the store
+// writes and the table does not have.
+func TestEveryPublishableIsNamespacedAndDistinct(t *testing.T) {
+	p := &provider.Provider{}
+	seen := map[string]bool{}
+	for _, publishable := range p.AddPublishables() {
+		if !strings.HasPrefix(publishable.Tag, "observe-") {
+			t.Errorf("%s carries tag %q, want an observe- prefix",
+				publishable.FilePath, publishable.Tag)
+		}
+		if seen[publishable.FilePath] {
+			t.Errorf("two publishables write %s", publishable.FilePath)
+		}
+		seen[publishable.FilePath] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("published %d files, want the create and the tags migration", len(seen))
+	}
 }

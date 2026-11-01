@@ -151,3 +151,42 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// TestTaggedAnswersAcrossRequests.
+//
+// This is the question a request id structurally cannot answer: every request
+// has a different one, so "everything this user did" is unaskable without
+// tags. Asserted at the store, which is what the tool reads — the tool's own
+// wiring is covered by TestEveryToolRegisters.
+func TestTaggedAnswersAcrossRequests(t *testing.T) {
+	store := memory.New()
+	recorder := observe.New(store)
+	t.Cleanup(func() { _ = recorder.Close(context.Background()) })
+
+	// Two separate requests by the same person, and one by somebody else.
+	for _, request := range []string{"req-1", "req-2"} {
+		ctx := observe.WithTags(
+			observe.WithRequestID(context.Background(), request), "user:7")
+		recorder.Record(ctx, observe.Entry{Kind: observe.KindRequest, Summary: "GET /" + request})
+	}
+	other := observe.WithTags(
+		observe.WithRequestID(context.Background(), "req-3"), "user:8")
+	recorder.Record(other, observe.Entry{Kind: observe.KindRequest, Summary: "GET /theirs"})
+
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := store.Entries(context.Background(), observe.Query{Tags: []string{"user:7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("found %d entries for user:7 across two requests, want 2", len(found))
+	}
+	for _, entry := range found {
+		if strings.Contains(entry.Summary, "theirs") {
+			t.Error("somebody else's entry came back in an answer about user 7")
+		}
+	}
+}

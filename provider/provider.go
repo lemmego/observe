@@ -54,8 +54,12 @@ type Provider struct {
 	// RoutePrefix is where the dashboard mounts. Empty means /observe.
 	RoutePrefix string
 
-	// Sampler decides which entries are kept. Nil keeps everything, which is
-	// right in development and wants reconsidering in production.
+	// Sampler decides which entries are kept.
+	//
+	// Nil defers to OBSERVE_SAMPLE, a rate between 0 and 1 read as a
+	// fraction of *requests* kept whole — see observe.SampleRequests. An
+	// absent or unparsable variable keeps everything, which is right in
+	// development and wants reconsidering in production.
 	Sampler func(observe.Entry) bool
 
 	// Retention is how long entries are kept by the prune command. Zero means
@@ -103,8 +107,8 @@ func (p *Provider) Provide(a app.App) error {
 	}
 
 	options := p.Options
-	if p.Sampler != nil {
-		options = append(options, observe.WithSampler(p.Sampler))
+	if sampler := p.sampler(); sampler != nil {
+		options = append(options, observe.WithSampler(sampler))
 	}
 
 	recorder := observe.New(store, options...)
@@ -134,6 +138,43 @@ func (p *Provider) Provide(a app.App) error {
 			"means no access rather than no authentication.")
 	}
 	return nil
+}
+
+// sampler resolves which entries are kept.
+//
+// An explicit Sampler wins over the environment: a field set in code is a
+// decision somebody wrote down, and letting a stray variable override it
+// would make the code lie.
+//
+// OBSERVE_SAMPLE is read directly rather than through config.MustEnv for the
+// same reason OBSERVE_ENABLED is: MustEnv treats a variable that is present
+// and empty as a decision, and panics on a value it cannot parse. A stray
+// `OBSERVE_SAMPLE=` would otherwise mean something different from an absent
+// one, and `OBSERVE_SAMPLE=half` would take the process down rather than
+// record everything and complain.
+func (p *Provider) sampler() func(observe.Entry) bool {
+	if p.Sampler != nil {
+		return p.Sampler
+	}
+
+	raw := strings.TrimSpace(os.Getenv("OBSERVE_SAMPLE"))
+	if raw == "" {
+		return nil
+	}
+	rate, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		slog.Warn("observe: OBSERVE_SAMPLE is not a number, so everything is "+
+			"being recorded", "value", raw)
+		return nil
+	}
+	if rate >= 1 {
+		return nil
+	}
+	if rate < 0 {
+		slog.Warn("observe: OBSERVE_SAMPLE is negative, so nothing will be "+
+			"recorded; set it between 0 and 1", "value", raw)
+	}
+	return observe.SampleRequests(rate)
 }
 
 // Recorder returns the installed recorder, or nil when recording is off.

@@ -135,6 +135,18 @@ type Entry struct {
 	// it, an empty query panel reads as "this application makes no queries"
 	// rather than as "nothing is watching them".
 	Watcher string `json:"watcher"`
+
+	// Tags label this entry for retrieval that a request id cannot serve.
+	//
+	// RequestID groups what one request did. A tag groups across requests —
+	// "everything this user did", "every entry that failed", "everything on
+	// this tenant" — which is the question a correlation id structurally
+	// cannot answer, because each request has a different one.
+	//
+	// Most tags arrive from the context rather than from the watcher that
+	// built the entry: see WithTags. The recorder normalises them and adds
+	// TagFailed, so a caller never has to.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Failed reports whether this entry describes something that went wrong.

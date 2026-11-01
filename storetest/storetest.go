@@ -48,6 +48,9 @@ func Run(t *testing.T, newStore Factory) {
 		{"an unknown id is ErrNoEntry", anUnknownIDIsErrNoEntry},
 		{"prune drops what is older and reports how many", pruneDropsWhatIsOlder},
 		{"the payload round-trips byte-identically", thePayloadRoundTripsByteIdentically},
+		{"tags round-trip", tagsRoundTrip},
+		{"a tag filter needs every tag", aTagFilterNeedsEveryTag},
+		{"a tag filter does not match a longer tag", aTagFilterDoesNotMatchALongerTag},
 	}
 
 	for _, tc := range cases {
@@ -397,4 +400,89 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+func tagsRoundTrip(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	if err := store.Record(ctx, []observe.Entry{{
+		ID: "tagged", Kind: observe.KindRequest, Summary: "GET /",
+		Tags: []string{"user:7", "tenant:acme"},
+	}}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	got, err := store.Entry(ctx, "tagged")
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "user:7" || got.Tags[1] != "tenant:acme" {
+		t.Errorf("Tags = %v, want them back in order", got.Tags)
+	}
+
+	// And an entry with none comes back with none rather than with one empty
+	// string, which is what a naive split of an empty column produces — and
+	// which would render as a blank chip in the dashboard forever.
+	if err := store.Record(ctx, []observe.Entry{{
+		ID: "bare", Kind: observe.KindRequest, Summary: "GET /bare",
+	}}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	bare, err := store.Entry(ctx, "bare")
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if len(bare.Tags) != 0 {
+		t.Errorf("Tags = %#v for an entry with none, want empty", bare.Tags)
+	}
+}
+
+// Every tag rather than any, because tags narrow: a reader asking for
+// "user:7" and "failed" wants what that user broke.
+func aTagFilterNeedsEveryTag(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	record(t, store, []observe.Entry{
+		{ID: "a", Kind: observe.KindQuery, Summary: "both", Tags: []string{"user:7", "failed"}},
+		{ID: "b", Kind: observe.KindQuery, Summary: "one", Tags: []string{"user:7"}},
+		{ID: "c", Kind: observe.KindQuery, Summary: "other", Tags: []string{"failed"}},
+		{ID: "d", Kind: observe.KindQuery, Summary: "none"},
+	})
+
+	found, err := store.Entries(ctx, observe.Query{Tags: []string{"user:7", "failed"}})
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "a" {
+		t.Errorf("got %v, want only the entry carrying both tags", ids(found))
+	}
+
+	// One tag still matches everything carrying it.
+	found, err = store.Entries(ctx, observe.Query{Tags: []string{"user:7"}})
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(found) != 2 {
+		t.Errorf("got %v, want both entries carrying user:7", ids(found))
+	}
+}
+
+// TestATagFilterDoesNotMatchALongerTag.
+//
+// The failure this guards is somebody else's data in an answer about this
+// one: an unanchored substring match for "user:7" also matches "user:70".
+// The SQL store packs tags into a column and matches with LIKE, so the
+// anchoring is load-bearing rather than incidental.
+func aTagFilterDoesNotMatchALongerTag(t *testing.T, store observe.Store) {
+	ctx := context.Background()
+	record(t, store, []observe.Entry{
+		{ID: "seven", Kind: observe.KindQuery, Summary: "theirs", Tags: []string{"user:7"}},
+		{ID: "seventy", Kind: observe.KindQuery, Summary: "somebody else", Tags: []string{"user:70"}},
+	})
+
+	found, err := store.Entries(ctx, observe.Query{Tags: []string{"user:7"}})
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "seven" {
+		t.Errorf("got %v, want only user:7 — user:70 is a different person", ids(found))
+	}
 }

@@ -8,6 +8,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -84,7 +85,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET "+s.p("/"), s.handleDashboard)
 	s.mux.HandleFunc("GET "+s.p("/api/entries"), s.handleEntries)
 	s.mux.HandleFunc("GET "+s.p("/api/requests/{id}"), s.handleRequest)
+	s.mux.HandleFunc("GET "+s.p("/api/entries/{id}"), s.handleEntry)
 	s.mux.HandleFunc("GET "+s.p("/api/stats"), s.handleStats)
+	s.mux.HandleFunc("GET "+s.p("/api/tail"), s.handleTail)
+	s.mux.HandleFunc("POST "+s.p("/api/pause"), s.handlePause)
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
@@ -161,13 +165,80 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleEntry returns one entry, for the detail pane.
+//
+// Separate from the request view because an entry is worth opening on its own:
+// an exception's stack and a dump's value are in the payload, and the list
+// shows one line of it.
+func (s *Server) handleEntry(w http.ResponseWriter, r *http.Request) {
+	store := s.store()
+	if store == nil {
+		writeError(w, http.StatusServiceUnavailable, "observe: recording is off")
+		return
+	}
+
+	entry, err := store.Entry(r.Context(), r.PathValue("id"))
+	if errors.Is(err, observe.ErrNoEntry) {
+		// 404 rather than 500: an id that named an entry which has since been
+		// pruned is ordinary, and a reader following a stale link should be
+		// told it is gone rather than that something broke.
+		writeError(w, http.StatusNotFound, "observe: no such entry")
+		return
+	}
+	if err != nil {
+		slog.Error("observe: reading an entry for the dashboard", "error", err)
+		writeError(w, http.StatusInternalServerError, "observe: the entry could not be read")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"data": entry})
+}
+
+// handlePause stops or starts this process recording.
+//
+// POST, because it changes state — which also means the application's CSRF
+// middleware applies if the dashboard is mounted behind it, and that is the
+// right default for a button that turns the debugger off.
+//
+// It pauses the process that served the request and says so. With several web
+// processes behind a balancer that is the wrong tool; sampling is the right
+// one. In development, where there is one process, it is exactly how you read
+// a list that will not stop scrolling.
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	if s.recorder == nil {
+		writeError(w, http.StatusServiceUnavailable, "observe: recording is off")
+		return
+	}
+
+	if r.URL.Query().Get("resume") == "1" {
+		s.recorder.Resume()
+	} else {
+		s.recorder.Pause()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paused": s.recorder.Paused()})
+}
+
 // handleStats reports what the recorder is doing, including which watchers
 // are installed — so an empty table can be told from an unwatched one.
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"stats":    s.recorder.Stats(),
-		"watchers": s.recorder.Watchers(),
+		"stats":       s.recorder.Stats(),
+		"watchers":    s.recorder.Watchers(),
+		"subscribers": s.recorder.Subscribers(),
 	})
+}
+
+// containsFold is the tail's version of the store's Contains predicate.
+//
+// Spelled out here rather than reached for in the store, because the stores
+// are where that predicate lives for history and a tail has no store to ask.
+// The two agreeing is what keeps a filter from meaning one thing in the list
+// and another in the tail.
+func containsFold(entry observe.Entry, needle string) bool {
+	needle = strings.ToLower(needle)
+	return strings.Contains(strings.ToLower(entry.Summary), needle) ||
+		strings.Contains(strings.ToLower(string(entry.Data)), needle) ||
+		strings.Contains(strings.ToLower(entry.Err), needle)
 }
 
 func (s *Server) store() observe.Store {
@@ -184,6 +255,12 @@ func decodeQuery(r *http.Request) (observe.Query, error) {
 		RequestID: values.Get("request"),
 		Contains:  values.Get("q"),
 		Cursor:    observe.Cursor{BeforeID: values.Get("cursor")},
+	}
+
+	for _, tag := range strings.Split(values.Get("tags"), ",") {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			query.Tags = append(query.Tags, tag)
+		}
 	}
 
 	for _, kind := range strings.Split(values.Get("kind"), ",") {

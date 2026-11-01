@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/lemmego/api/app"
@@ -95,6 +96,15 @@ func record(recorder *observe.Recorder, ctx context.Context, r *http.Request,
 		Level:    level,
 		Summary:  r.Method + " " + r.URL.Path,
 		Watcher:  WatcherHTTP,
+		// On the request entry only, not on the context: a status belongs to
+		// the response and tagging the context with it would be tagging every
+		// query the request made with an outcome it had no part in. The
+		// recorder adds "failed" itself, and whoever is signed in belongs on
+		// the context — see observe.WithTags.
+		Tags: []string{
+			"method:" + r.Method,
+			"status:" + strconv.Itoa(recording.status),
+		},
 	}
 	if data, err := json.Marshal(payload); err == nil {
 		entry.Data = data

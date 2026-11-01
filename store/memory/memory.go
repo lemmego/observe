@@ -177,6 +177,9 @@ func matches(entry observe.Entry, q observe.Query) bool {
 			return false
 		}
 	}
+	if !observe.HasTags(entry, q.Tags) {
+		return false
+	}
 	return true
 }
 

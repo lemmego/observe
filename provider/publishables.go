@@ -26,6 +26,12 @@ const (
 // what anyone running it expects.
 const MigrationVersion = "20261028000000"
 
+// TagsMigrationVersion is the version the tags migration registers under.
+//
+// Fixed for the same reason, and later than MigrationVersion so the migrator
+// orders the ALTER after the CREATE.
+const TagsMigrationVersion = "20261102000000"
+
 // AddPublishables offers the migration to the project.
 //
 // Published rather than run at boot because the schema is the application's:
@@ -43,6 +49,12 @@ func (p *Provider) AddPublishables() []*app.Publishable {
 			FilePath: filepath.Join(utils.MigrationPath(),
 				MigrationVersion+"_create_observe_entries_table.go"),
 			Content: []byte(MigrationStub),
+			Tag:     TagMigrations,
+		},
+		{
+			FilePath: filepath.Join(utils.MigrationPath(),
+				TagsMigrationVersion+"_add_tags_to_observe_entries.go"),
+			Content: []byte(TagsMigrationStub),
 			Tag:     TagMigrations,
 		},
 	}

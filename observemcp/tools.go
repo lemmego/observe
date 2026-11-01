@@ -44,6 +44,7 @@ func Tools() func(*sdk.Server) {
 		t.addSlowQueries(server)
 		t.addRepeatedQueries(server)
 		t.addErrors(server)
+		t.addTagged(server)
 	}
 }
 
@@ -498,4 +499,87 @@ func failure(format string, args ...any) *sdk.CallToolResult {
 		IsError: true,
 		Content: []sdk.Content{&sdk.TextContent{Text: fmt.Sprintf(format, args...)}},
 	}
+}
+
+// ---------------------------------------------------------------------------
+
+type taggedInput struct {
+	Tags     []string `json:"tags" jsonschema:"tags an entry must carry, all of them — for example [\"user:7\"] or [\"user:7\",\"failed\"]"`
+	Limit    int      `json:"limit,omitempty" jsonschema:"how many to return (default 50)"`
+	SinceMin int      `json:"since_minutes,omitempty" jsonschema:"only entries from the last N minutes"`
+}
+
+type taggedEntry struct {
+	Kind       string   `json:"kind"`
+	Summary    string   `json:"summary"`
+	RequestID  string   `json:"request_id,omitempty"`
+	DurationMS float64  `json:"duration_ms,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	At         string   `json:"at"`
+}
+
+type taggedOutput struct {
+	Entries []taggedEntry `json:"entries"`
+}
+
+func (t *tools) addTagged(server *sdk.Server) {
+	sdk.AddTool(server, &sdk.Tool{
+		Name: "observe-tagged",
+		Description: "Entries carrying every one of the given tags, across requests and " +
+			"kinds. This is the question a request id cannot answer, because every " +
+			"request has a different one: \"everything user 7 did\", \"everything that " +
+			"failed on this tenant\". Common tags are user:<id> and tenant:<id> if the " +
+			"application sets them, plus failed, method:<verb> and status:<code>, which " +
+			"observe sets itself.",
+	}, t.tagged)
+}
+
+func (t *tools) tagged(ctx context.Context, _ *sdk.CallToolRequest, in taggedInput) (*sdk.CallToolResult, taggedOutput, error) {
+	if len(in.Tags) == 0 {
+		return failure("observe-tagged needs at least one tag. Without one it " +
+			"is observe-requests with extra steps."), taggedOutput{}, nil
+	}
+
+	store, err := t.store()
+	if err != nil {
+		return failure("%v", err), taggedOutput{}, nil
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query := observe.Query{
+		Tags:   in.Tags,
+		Cursor: observe.Cursor{Limit: limit},
+	}
+	if in.SinceMin > 0 {
+		query.Since = time.Now().Add(-time.Duration(in.SinceMin) * time.Minute)
+	}
+
+	entries, err := store.Entries(ctx, query)
+	if err != nil {
+		return failure("reading tagged entries: %v", err), taggedOutput{}, nil
+	}
+
+	out := taggedOutput{Entries: make([]taggedEntry, 0, len(entries))}
+	var body strings.Builder
+	for _, entry := range entries {
+		out.Entries = append(out.Entries, taggedEntry{
+			Kind:       string(entry.Kind),
+			Summary:    entry.Summary,
+			RequestID:  entry.RequestID,
+			DurationMS: float64(entry.Duration) / float64(time.Millisecond),
+			Error:      entry.Err,
+			Tags:       entry.Tags,
+			At:         entry.At.UTC().Format(time.RFC3339),
+		})
+		fmt.Fprintf(&body, "%-8s %s\n", entry.Kind, entry.Summary)
+		if entry.Err != "" {
+			fmt.Fprintf(&body, "         %s\n", entry.Err)
+		}
+	}
+
+	return text(body.String() + t.note(len(entries))), out, nil
 }
