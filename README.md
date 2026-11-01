@@ -442,12 +442,27 @@ entry, so a statement about to be discarded paid full price first. At a one
 percent rate that saved about a third of the work rather than ninety-nine
 percent of it. `bench_hotpath_test.go` is what keeps it honest.
 
-### What sampling never drops
+### What *rate* sampling never drops
 
 Anything that **failed**, plus exceptions and dumps. A sampled-out request
 that broke is the request you most need, and an error view showing a tenth of
 the errors is worse than none — it reads as a number rather than as a sample.
 A dump was asked for by name, in code somebody wrote.
+
+**This exemption covers the rate, not `WithSampler`.** An entry predicate you
+write is honoured exactly as written, including when it drops a failure —
+somebody who writes a filter means it, and a framework quietly overriding it
+would make the filter a liar. If your predicate should keep failures, say so
+in it:
+
+```go
+observe.WithSampler(func(e observe.Entry) bool {
+    if e.Kind != observe.KindQuery || e.Failed() {
+        return true
+    }
+    return !strings.Contains(e.Summary, "FROM tasker_jobs")
+})
+```
 
 The cost is worth knowing: a badly broken application samples itself less,
 because more of its entries qualify. The queue's drop counter is what bounds
@@ -507,6 +522,21 @@ floor in development.
 before anything is built. `WithSampler` is a finer filter over a built entry,
 applied within a kept request — "keep a tenth of requests, and within those
 drop cache hits". They compose.
+
+`WithSampler` is also the answer to the noisiest thing a production
+deployment records, which is **not** the application. A queue worker polling
+its table runs on a background goroutine with no correlation id, so no rate
+can touch it — "work with no request id is kept" is the right rule, because
+an entry belonging to no group cannot be sampled coherently. Measured on a
+real deployment: 355 of 508 query entries in one sample were the poll, at a
+rate projecting to 514MB a day against a 500MB volume. Drop it by what it is:
+
+```go
+observe.WithSampler(func(e observe.Entry) bool {
+    return e.Kind != observe.KindQuery || e.Failed() ||
+        !strings.Contains(e.Summary, "tasker_jobs")
+})
+```
 
 Sampled-out entries are counted separately from dropped ones and shown in the
 dashboard. Without that number, a list one tenth as long as expected looks
