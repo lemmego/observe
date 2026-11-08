@@ -192,3 +192,39 @@ func TestEveryPublishableIsNamespacedAndDistinct(t *testing.T) {
 			len(seen))
 	}
 }
+
+// TestThePublishedMigrationTakesItsPrecisionFromTheDialect.
+//
+// A literal DATETIME(6) here made the table writable and unreadable on
+// SQLite, which is the default dialect of every scaffolded project. SQLite
+// stores no types: a driver reads a column's Go type from the type it was
+// declared with, and glebarez/go-sqlite maps DATETIME to time.Time while
+// DATETIME(6) comes back a string — so entries recorded cleanly and every
+// read answered "entries could not be read". MySQL needs the 6, so the fix is
+// a dialect check and not a deletion.
+//
+// Nothing else could have caught it: storetest builds its tables from
+// SchemaStatements, which has always been right, and only a published project
+// ever runs this file. TestSchemaStatementsCoverEveryDialect is the other half
+// of the pair, and sqlstore's own test pins the driver behaviour underneath.
+func TestThePublishedMigrationTakesItsPrecisionFromTheDialect(t *testing.T) {
+	if strings.Contains(provider.MigrationStub, `t.DateTime("recorded_at", 6)`) {
+		t.Error("recorded_at is published with a fixed precision of 6, which " +
+			"SQLite cannot read back")
+	}
+	if !strings.Contains(provider.MigrationStub, `t.DateTime("recorded_at", recordedAtPrecision())`) {
+		t.Error("recorded_at no longer takes its precision from the dialect")
+	}
+	// The helper has to be published with it, or the file does not compile.
+	// TestThePublishedMigrationIsValidGo parses it and a type error is not a
+	// parse error, so this is asserted rather than inferred.
+	for _, needed := range []string{
+		"func recordedAtPrecision() uint {", `"os"`, `"strings"`,
+		`os.Getenv("DB_DRIVER")`, "return 6",
+	} {
+		if !strings.Contains(provider.MigrationStub, needed) {
+			t.Errorf("the published migration is missing %q, so it will not "+
+				"compile in a project", needed)
+		}
+	}
+}

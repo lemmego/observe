@@ -19,9 +19,16 @@ const Redacted = "[redacted]"
 // of forgetting is a leaked credential — where the cost of over-redacting is
 // somebody asking you for a value. This mirrors what lemmego/mcp withholds
 // from an agent, for the same reason.
+// A credential's name is spelled three ways and all three have to be here.
+// "api_key" is the configuration spelling, "apikey" the Go-field one, and
+// "api-key" the header one — X-Api-Key is how an HTTP API almost always
+// spells it, and matching the other two while missing it recorded the key on
+// every authenticated request of the first application this was turned on
+// for. Hyphens are worth a thought for every fragment below: a header is the
+// one place a key arrives hyphenated.
 var secretKeyFragments = []string{
 	"password", "passwd", "secret", "token", "credential", "salt",
-	"apikey", "api_key", "private", "signature", "authorization",
+	"apikey", "api_key", "api-key", "private", "signature", "authorization",
 	"cookie", "session", "dsn", "jwt", "bearer", "otp", "pin",
 }
 

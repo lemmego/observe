@@ -11,14 +11,32 @@ package provider
 // The cost is that this and sqlstore.SchemaStatements can drift, which
 // TestThePublishedMigrationMatchesTheSchema pins.
 //
-// DateTime with a precision of 6 rather than Timestamp: MySQL's TIMESTAMP
-// tops out in 2038 and, with no explicit default, acquires an automatic
-// ON UPDATE CURRENT_TIMESTAMP that would rewrite the moment an entry was
-// recorded — which is the one column here that must never move.
+// DateTime rather than Timestamp: MySQL's TIMESTAMP tops out in 2038 and,
+// with no explicit default, acquires an automatic ON UPDATE CURRENT_TIMESTAMP
+// that would rewrite the moment an entry was recorded — which is the one
+// column here that must never move.
+//
+// Its precision has to come from the dialect, which is why the stub carries a
+// helper rather than a literal 6. SQLite stores no types: a driver decides
+// what Go value a column yields from the type it was declared with, and
+// glebarez/go-sqlite maps DATETIME to time.Time while DATETIME(6) — a
+// spelling it does not recognise — comes back a string. Every read here
+// orders by this column and scans it into a time.Time, so a precision on
+// SQLite makes the table writable and unreadable: entries record cleanly and
+// the dashboard, the JSON API and observe:last all answer "entries could not
+// be read". MySQL needs the 6, so dropping it everywhere is not the fix — a
+// bare DATETIME there truncates to the second, and a request issuing twenty
+// statements inside one second would come back in an arbitrary order.
+//
+// sqlstore.SchemaStatements has always had this right, which is why nothing
+// here caught it: storetest builds its tables with that, and only a
+// published project runs this.
 const MigrationStub = `package migrations
 
 import (
 	"database/sql"
+	"os"
+	"strings"
 
 	"github.com/lemmego/migration"
 )
@@ -44,12 +62,30 @@ func init() {
 // This table grows with traffic and nothing prunes it on its own. Run
 // ` + "`lemmego run observe:prune`" + ` on a schedule, or give it a retention
 // policy in your database.
+// recordedAtPrecision is the fractional-second precision of recorded_at.
+//
+// It differs by dialect and must: SQLite reads a column's Go type from its
+// declared type, and its driver maps DATETIME to a time.Time while
+// DATETIME(6) comes back a string — so a precision there makes this table
+// writable and unreadable. MySQL needs the 6, because a bare DATETIME
+// truncates to the second and a request's entries are ordered by this column.
+func recordedAtPrecision() uint {
+	// DB_DRIVER is what lemmego/migration reads to choose a dialect,
+	// defaulting to sqlite when unset, so this agrees with the DDL being
+	// generated around it rather than deciding separately.
+	driver := strings.ToLower(strings.TrimSpace(os.Getenv("DB_DRIVER")))
+	if driver == "" || strings.HasPrefix(driver, "sqlite") {
+		return 0
+	}
+	return 6
+}
+
 func mig_20261028000000_create_observe_entries_table_up(tx *sql.Tx) error {
 	if _, err := tx.Exec(migration.Create("observe_entries", func(t *migration.Table) {
 		t.String("id", 64).Primary()
 		t.String("kind", 32)
 		t.String("request_id", 64).Default("")
-		t.DateTime("recorded_at", 6)
+		t.DateTime("recorded_at", recordedAtPrecision())
 		t.BigInt("duration_ns").Default(0)
 		t.Int("level").Default(0)
 		t.Text("summary")

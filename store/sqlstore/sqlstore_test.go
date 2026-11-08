@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,4 +217,67 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestSQLiteCannotReadATimestampDeclaredWithAPrecision pins the driver
+// behaviour that decides how this schema spells its timestamp column.
+//
+// SQLite has no column types, only declared ones, and a driver maps a
+// declared type to a Go type by name. glebarez/go-sqlite knows DATETIME and
+// does not know DATETIME(6), so the second comes back a string — and every
+// read in this package orders by recorded_at and scans it into a time.Time.
+// A precision there is therefore not a cosmetic difference: it makes the
+// table writable and unreadable, which is the worst shape a store can take,
+// because nothing complains until somebody looks.
+//
+// Asserted rather than commented, because DATETIME(6) is the obvious thing to
+// write — MySQL wants it, and the published migration had it for exactly that
+// reason.
+func TestSQLiteCannotReadATimestampDeclaredWithAPrecision(t *testing.T) {
+	pool, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "declared.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+
+	for _, declared := range []struct {
+		typ      string
+		readable bool
+	}{
+		{"DATETIME", true},
+		{"TIMESTAMP", true},
+		{"DATETIME(6)", false},
+		{"DATETIME(3)", false},
+	} {
+		table := "t" + strings.Map(func(r rune) rune {
+			if r == '(' || r == ')' {
+				return '_'
+			}
+			return r
+		}, declared.typ)
+
+		if _, err := pool.Exec("CREATE TABLE " + table + " (at " + declared.typ + " NOT NULL)"); err != nil {
+			t.Fatalf("%s: %v", declared.typ, err)
+		}
+		if _, err := pool.Exec("INSERT INTO "+table+" (at) VALUES (?)", time.Now().UTC()); err != nil {
+			t.Fatalf("%s: %v", declared.typ, err)
+		}
+
+		var at time.Time
+		err := pool.QueryRow("SELECT at FROM " + table).Scan(&at)
+		switch {
+		case declared.readable && err != nil:
+			t.Errorf("%s cannot be scanned into a time.Time: %v", declared.typ, err)
+		case !declared.readable && err == nil:
+			t.Errorf("%s now scans into a time.Time; the schema could use it, "+
+				"and SchemaStatements may be simplified", declared.typ)
+		}
+	}
+
+	// And the schema this package generates stays on the readable side.
+	for _, statement := range sqlstore.SchemaStatements(sqlstore.SQLite, "observe_entries")[:1] {
+		if strings.Contains(statement, "DATETIME(") {
+			t.Errorf("the SQLite schema declares a precision: %s", statement)
+		}
+	}
 }
