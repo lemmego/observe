@@ -10,7 +10,7 @@ require (
 	github.com/lemmego/cache v0.3.0
 	github.com/lemmego/mail v0.2.4
 	github.com/lemmego/notify v0.3.0
-	github.com/lemmego/tasker v0.2.1
+	github.com/lemmego/tasker v0.3.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/spf13/cobra v1.8.1
 )
