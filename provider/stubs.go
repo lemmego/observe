@@ -74,7 +74,12 @@ func recordedAtPrecision() uint {
 	// defaulting to sqlite when unset, so this agrees with the DDL being
 	// generated around it rather than deciding separately.
 	driver := strings.ToLower(strings.TrimSpace(os.Getenv("DB_DRIVER")))
-	if driver == "" || strings.HasPrefix(driver, "sqlite") {
+	// sqlite and sqlite3 by prefix; libsql by name, because libSQL is a fork
+	// of SQLite and rejects DATETIME(6) exactly as SQLite does. Matched
+	// literally rather than through db.ParseDialect on purpose: this file is
+	// published into your project and is yours to edit, so it should not
+	// reach into the framework to answer a two-case question.
+	if driver == "" || strings.HasPrefix(driver, "sqlite") || driver == "libsql" {
 		return 0
 	}
 	return 6
